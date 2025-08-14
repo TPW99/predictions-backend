@@ -1,10 +1,13 @@
+// --- THIS MUST BE THE VERY FIRST LINE ---
+require('dotenv').config(); // This loads the .env file variables
+
 // --- Import necessary packages ---
 const express = require('express');
-const cors = require('cors');
+const cors =require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-require('dotenv').config();
+const axios = require('axios');
 
 // --- Create the Express App ---
 const app = express();
@@ -133,12 +136,9 @@ app.get('/api/fixtures', async (req, res) => {
     }
 });
 
-// NEW Leaderboard Route
 app.get('/api/leaderboard', async (req, res) => {
     try {
-        const leaderboard = await User.find({})
-            .sort({ score: -1 }) // Sort by score, highest first
-            .select('name score'); // Only get the name and score
+        const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
         res.json(leaderboard);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching leaderboard data.' });
@@ -177,11 +177,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
 // --- Admin Route for Scoring ---
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     try {
-        const fixturesToScore = await Fixture.find({
-            kickoffTime: { $lt: new Date() },
-            'actualScore.home': null
-        });
-
+        const fixturesToScore = await Fixture.find({ kickoffTime: { $lt: new Date() }, 'actualScore.home': null });
         if (fixturesToScore.length === 0) return res.status(200).json({ message: 'No fixtures to score.' });
 
         const fixtureUpdates = fixturesToScore.map(fixture => {
@@ -214,21 +210,55 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Database Seeding ---
+// --- Database Seeding with Live API Data ---
 const seedFixtures = async () => {
     try {
-        await Fixture.deleteMany({});
-        const today = new Date();
-        const initialFixtures = [
-            { homeTeam: 'Manchester United', awayTeam: 'Fulham', kickoffTime: new Date(today.getTime() + 6 * 24 * 60 * 60 * 1000), isDerby: false },
-            { homeTeam: 'Ipswich Town', awayTeam: 'Liverpool', kickoffTime: new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000), isDerby: false },
-            { homeTeam: 'Arsenal', awayTeam: 'Wolves', kickoffTime: new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000 + 3 * 60 * 60 * 1000), isDerby: false },
-            { homeTeam: 'Chelsea', awayTeam: 'Manchester City', kickoffTime: new Date(today.getTime() + 8 * 24 * 60 * 60 * 1000), isDerby: true }
-        ];
-        await Fixture.insertMany(initialFixtures);
-        console.log('Fixtures seeded successfully with future dates!');
+        const apiKey = process.env.API_FOOTBALL_KEY ? process.env.API_FOOTBALL_KEY.trim() : null;
+        if (!apiKey) {
+            console.log('API_FOOTBALL_KEY not found in environment variables, skipping fixture seeding.');
+            return;
+        }
+        
+        const fixtureCount = await Fixture.countDocuments();
+        if (fixtureCount > 0) {
+            console.log('Database already contains fixtures. Skipping seed.');
+            return;
+        }
+
+        console.log('Fetching live fixtures from API-Football...');
+
+        const response = await axios.get('https://v3.football.api-sports.io/fixtures', {
+            params: { 
+                league: '39',
+                season: '2024'
+            },
+            headers: {
+                'x-rapidapi-host': 'v3.football.api-sports.io',
+                'x-rapidapi-key': apiKey,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
+            }
+        });
+
+        const fixturesFromApi = response.data.response;
+        if (fixturesFromApi.length === 0) {
+            console.log('API returned 0 fixtures. This is normal if the season has not started yet.');
+            return;
+        }
+        
+        const fixturesToSave = fixturesFromApi.map(f => ({
+            homeTeam: f.teams.home.name,
+            awayTeam: f.teams.away.name,
+            kickoffTime: new Date(f.fixture.date),
+            isDerby: (f.teams.home.name.includes("Manchester") && f.teams.away.name.includes("Manchester")) || (f.teams.home.name.includes("Liverpool") && f.teams.away.name.includes("Everton"))
+        }));
+
+        await Fixture.insertMany(fixturesToSave);
+        console.log(`Successfully seeded ${fixturesToSave.length} fixtures from the API.`);
+
     } catch (error) {
-        console.error('Error seeding fixtures:', error);
+        console.error('Error in seedFixtures:');
+        if (error.response) console.error('API Error:', error.response.data);
+        else console.error('Error Message:', error.message);
     }
 };
 
