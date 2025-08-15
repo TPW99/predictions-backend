@@ -7,7 +7,8 @@ const cors =require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const cron = require('node-cron'); // <-- NEW: For scheduled tasks
+const axios = require('axios');
+const cron = require('node-cron');
 
 // --- Create the Express App ---
 const app = express();
@@ -79,7 +80,7 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- NEW: Reusable Scoring Logic ---
+// --- Reusable Scoring Logic ---
 const runScoringProcess = async () => {
     console.log('Running scheduled scoring process...');
     try {
@@ -93,7 +94,6 @@ const runScoringProcess = async () => {
             return { success: true, message: 'No new fixtures to score.' };
         }
 
-        // In a real app, you'd fetch real results here. For now, we use random scores.
         const fixtureUpdates = fixturesToScore.map(fixture => {
             fixture.actualScore = { home: Math.floor(Math.random() * 4), away: Math.floor(Math.random() * 3) };
             return fixture.save();
@@ -224,22 +224,44 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Database Seeding with Static Data ---
+// --- Database Seeding with TheSportsDB API Data ---
 const seedFixtures = async () => {
     try {
+        const apiKey = process.env.THESPORTSDB_API_KEY;
+        if (!apiKey) {
+            console.log('THESPORTSDB_API_KEY not found in .env, skipping fixture seeding.');
+            return;
+        }
+        
         await Fixture.deleteMany({});
-        console.log('Seeding database with static fixtures...');
-        const today = new Date();
-        const initialFixtures = [
-            { homeTeam: 'Man Utd', awayTeam: 'Fulham', kickoffTime: new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000), isDerby: false },
-            { homeTeam: 'Ipswich', awayTeam: 'Liverpool', kickoffTime: new Date(today.getTime() + 3 * 24 * 60 * 60 * 1000), isDerby: false },
-            { homeTeam: 'Arsenal', awayTeam: 'Wolves', kickoffTime: new Date(today.getTime() + 3 * 24 * 60 * 60 * 1000 + 3 * 60 * 60 * 1000), isDerby: false },
-            { homeTeam: 'Everton', awayTeam: 'Brighton', kickoffTime: new Date(today.getTime() + 3 * 24 * 60 * 60 * 1000 + 5 * 60 * 60 * 1000), isDerby: false },
-        ];
-        await Fixture.insertMany(initialFixtures);
-        console.log(`Successfully seeded ${initialFixtures.length} static fixtures.`);
+        console.log('Fetching live fixtures from TheSportsDB...');
+
+        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsseason.php?id=4328&s=2025-2026`;
+        const response = await axios.get(url);
+
+        const fixturesFromApi = response.data.events;
+        if (!fixturesFromApi || fixturesFromApi.length === 0) {
+            console.log('API returned 0 fixtures. This is normal if the season schedule is not yet available on TheSportsDB.');
+            return;
+        }
+        
+        const fixturesToSave = fixturesFromApi.map(f => {
+            const kickoff = new Date(`${f.dateEvent}T${f.strTime}`);
+            return {
+                homeTeam: f.strHomeTeam,
+                awayTeam: f.strAwayTeam,
+                kickoffTime: kickoff,
+                isDerby: (f.strHomeTeam.includes("Man") && f.strAwayTeam.includes("Man")) || (f.strHomeTeam === "Liverpool" && f.strAwayTeam === "Everton")
+            };
+        });
+
+        await Fixture.insertMany(fixturesToSave);
+        console.log(`Successfully seeded ${fixturesToSave.length} fixtures from TheSportsDB API.`);
+
     } catch (error) {
-        console.error('Error in seedFixtures:', error);
+        console.error('Error in seedFixtures:');
+        if (error.response) console.error('API Error:', error.response.data);
+        else console.error('Error Message:', error.message);
     }
 };
 
@@ -249,8 +271,7 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
         console.log('Successfully connected to MongoDB Atlas!');
         await seedFixtures();
         
-        // --- NEW: Schedule the scoring job ---
-        // This will run at 3:00 AM UTC every day.
+        // Schedule the scoring job
         cron.schedule('0 3 * * *', () => {
             console.log('--- Triggering daily automated scoring job ---');
             runScoringProcess();
