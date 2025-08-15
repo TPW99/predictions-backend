@@ -7,7 +7,7 @@ const cors =require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const axios = require('axios');
+const cron = require('node-cron'); // <-- NEW: For scheduled tasks
 
 // --- Create the Express App ---
 const app = express();
@@ -79,109 +79,23 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- API Endpoints ---
-
-// --- Auth Routes (Public) ---
-app.post('/api/auth/register', async (req, res) => {
+// --- NEW: Reusable Scoring Logic ---
+const runScoringProcess = async () => {
+    console.log('Running scheduled scoring process...');
     try {
-        const { name, email, password } = req.body;
-        const existingUser = await User.findOne({ email });
-        if (existingUser) return res.status(400).json({ message: 'User with this email already exists.' });
-        
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-        const newUser = new User({ name, email, password: hashedPassword });
-        await newUser.save();
-        res.status(201).json({ message: 'User registered successfully!' });
-    } catch (error) {
-        res.status(500).json({ message: 'Server error during registration.' });
-    }
-});
+        const fixturesToScore = await Fixture.find({ 
+            kickoffTime: { $lt: new Date() }, 
+            'actualScore.home': null 
+        });
 
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        const user = await User.findOne({ email });
-        if (!user) return res.status(400).json({ message: 'Invalid credentials.' });
-
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(400).json({ message: 'Invalid credentials.' });
-
-        const payload = { userId: user._id, name: user.name };
-        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '3h' });
-        res.status(200).json({ token, message: 'Logged in successfully!' });
-    } catch (error) {
-        res.status(500).json({ message: 'Server error during login.' });
-    }
-});
-
-// --- User Data Route (Protected) ---
-app.get('/api/user/me', authenticateToken, async (req, res) => {
-    try {
-        const user = await User.findById(req.user.userId).select('-password');
-        if (!user) return res.status(404).json({ message: 'User not found.' });
-        res.json(user);
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching user data.' });
-    }
-});
-
-// --- Game Data Routes ---
-app.get('/api/fixtures', async (req, res) => {
-    try {
-        const fixtures = await Fixture.find().sort({ kickoffTime: 1 });
-        res.json(fixtures);
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching fixtures' });
-    }
-});
-
-app.get('/api/leaderboard', async (req, res) => {
-    try {
-        const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
-        res.json(leaderboard);
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching leaderboard data.' });
-    }
-});
-
-app.post('/api/prophecies', authenticateToken, async (req, res) => {
-    const { prophecies } = req.body;
-    const userId = req.user.userId;
-    try {
-        await User.findByIdAndUpdate(userId, { $set: { prophecies: prophecies } });
-        res.status(200).json({ success: true, message: 'Prophecies saved successfully.' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Error saving prophecies.' });
-    }
-});
-
-app.post('/api/predictions', authenticateToken, async (req, res) => {
-    const { predictions, jokerFixtureId } = req.body;
-    const userId = req.user.userId;
-    const predictionsArray = Object.keys(predictions).map(fixtureId => ({
-        fixtureId: fixtureId, homeScore: predictions[fixtureId].homeScore, awayScore: predictions[fixtureId].awayScore
-    }));
-    try {
-        const updateData = { 'predictions': predictionsArray, 'chips.jokerFixtureId': jokerFixtureId };
-        if (jokerFixtureId) {
-            updateData['chips.jokerUsedInSeason'] = true;
+        if (fixturesToScore.length === 0) {
+            console.log('No new fixtures to score.');
+            return { success: true, message: 'No new fixtures to score.' };
         }
-        await User.findByIdAndUpdate(userId, { $set: updateData });
-        res.status(200).json({ success: true, message: 'Predictions saved.', submittedAt: new Date() });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Error saving predictions.' });
-    }
-});
 
-// --- Admin Route for Scoring ---
-app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
-    try {
-        const fixturesToScore = await Fixture.find({ kickoffTime: { $lt: new Date() }, 'actualScore.home': null });
-        if (fixturesToScore.length === 0) return res.status(200).json({ message: 'No fixtures to score.' });
-
+        // In a real app, you'd fetch real results here. For now, we use random scores.
         const fixtureUpdates = fixturesToScore.map(fixture => {
-            fixture.actualScore = { home: Math.floor(Math.random() * 5), away: Math.floor(Math.random() * 5) };
+            fixture.actualScore = { home: Math.floor(Math.random() * 4), away: Math.floor(Math.random() * 3) };
             return fixture.save();
         });
         const updatedFixtures = await Promise.all(fixtureUpdates);
@@ -204,61 +118,128 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
         });
 
         await Promise.all(userUpdates);
-        res.status(200).json({ success: true, message: `${fixturesToScore.length} fixtures scored.` });
+        console.log(`Scoring complete. ${fixturesToScore.length} fixtures and ${allUsers.length} users updated.`);
+        return { success: true, message: `${fixturesToScore.length} fixtures scored successfully.` };
+
     } catch (error) {
-        res.status(500).json({ message: 'Error during scoring.' });
+        console.error('Error during scoring process:', error);
+        return { success: false, message: 'An error occurred during scoring.' };
+    }
+};
+
+
+// --- API Endpoints ---
+
+// Auth Routes...
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+        const existingUser = await User.findOne({ email });
+        if (existingUser) return res.status(400).json({ message: 'User with this email already exists.' });
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        const newUser = new User({ name, email, password: hashedPassword });
+        await newUser.save();
+        res.status(201).json({ message: 'User registered successfully!' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error during registration.' });
+    }
+});
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ message: 'Invalid credentials.' });
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(400).json({ message: 'Invalid credentials.' });
+        const payload = { userId: user._id, name: user.name };
+        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '3h' });
+        res.status(200).json({ token, message: 'Logged in successfully!' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error during login.' });
     }
 });
 
-// --- Database Seeding with Live API Data ---
+// User and Game Data Routes...
+app.get('/api/user/me', authenticateToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.userId).select('-password');
+        if (!user) return res.status(404).json({ message: 'User not found.' });
+        res.json(user);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching user data.' });
+    }
+});
+app.get('/api/fixtures', async (req, res) => {
+    try {
+        const fixtures = await Fixture.find().sort({ kickoffTime: 1 });
+        res.json(fixtures);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching fixtures' });
+    }
+});
+app.get('/api/leaderboard', async (req, res) => {
+    try {
+        const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
+        res.json(leaderboard);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching leaderboard data.' });
+    }
+});
+app.post('/api/prophecies', authenticateToken, async (req, res) => {
+    const { prophecies } = req.body;
+    const userId = req.user.userId;
+    try {
+        await User.findByIdAndUpdate(userId, { $set: { prophecies: prophecies } });
+        res.status(200).json({ success: true, message: 'Prophecies saved successfully.' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error saving prophecies.' });
+    }
+});
+app.post('/api/predictions', authenticateToken, async (req, res) => {
+    const { predictions, jokerFixtureId } = req.body;
+    const userId = req.user.userId;
+    const predictionsArray = Object.keys(predictions).map(fixtureId => ({
+        fixtureId: fixtureId, homeScore: predictions[fixtureId].homeScore, awayScore: predictions[fixtureId].awayScore
+    }));
+    try {
+        const updateData = { 'predictions': predictionsArray, 'chips.jokerFixtureId': jokerFixtureId };
+        if (jokerFixtureId) {
+            updateData['chips.jokerUsedInSeason'] = true;
+        }
+        await User.findByIdAndUpdate(userId, { $set: updateData });
+        res.status(200).json({ success: true, message: 'Predictions saved.', submittedAt: new Date() });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error saving predictions.' });
+    }
+});
+
+// Admin Route for Scoring (can still be used for manual testing)
+app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
+    const result = await runScoringProcess();
+    if (result.success) {
+        res.status(200).json(result);
+    } else {
+        res.status(500).json(result);
+    }
+});
+
+// --- Database Seeding with Static Data ---
 const seedFixtures = async () => {
     try {
-        const apiKey = process.env.API_FOOTBALL_KEY ? process.env.API_FOOTBALL_KEY.trim() : null;
-        if (!apiKey) {
-            console.log('API_FOOTBALL_KEY not found in environment variables, skipping fixture seeding.');
-            return;
-        }
-        
-        const fixtureCount = await Fixture.countDocuments();
-        if (fixtureCount > 0) {
-            console.log('Database already contains fixtures. Skipping seed.');
-            return;
-        }
-
-        console.log('Fetching live fixtures from API-Football...');
-
-        const response = await axios.get('https://v3.football.api-sports.io/fixtures', {
-            params: { 
-                league: '39',
-                season: '2024'
-            },
-            headers: {
-                'x-rapidapi-host': 'v3.football.api-sports.io',
-                'x-rapidapi-key': apiKey,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
-            }
-        });
-
-        const fixturesFromApi = response.data.response;
-        if (fixturesFromApi.length === 0) {
-            console.log('API returned 0 fixtures. This is normal if the season has not started yet.');
-            return;
-        }
-        
-        const fixturesToSave = fixturesFromApi.map(f => ({
-            homeTeam: f.teams.home.name,
-            awayTeam: f.teams.away.name,
-            kickoffTime: new Date(f.fixture.date),
-            isDerby: (f.teams.home.name.includes("Manchester") && f.teams.away.name.includes("Manchester")) || (f.teams.home.name.includes("Liverpool") && f.teams.away.name.includes("Everton"))
-        }));
-
-        await Fixture.insertMany(fixturesToSave);
-        console.log(`Successfully seeded ${fixturesToSave.length} fixtures from the API.`);
-
+        await Fixture.deleteMany({});
+        console.log('Seeding database with static fixtures...');
+        const today = new Date();
+        const initialFixtures = [
+            { homeTeam: 'Man Utd', awayTeam: 'Fulham', kickoffTime: new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000), isDerby: false },
+            { homeTeam: 'Ipswich', awayTeam: 'Liverpool', kickoffTime: new Date(today.getTime() + 3 * 24 * 60 * 60 * 1000), isDerby: false },
+            { homeTeam: 'Arsenal', awayTeam: 'Wolves', kickoffTime: new Date(today.getTime() + 3 * 24 * 60 * 60 * 1000 + 3 * 60 * 60 * 1000), isDerby: false },
+            { homeTeam: 'Everton', awayTeam: 'Brighton', kickoffTime: new Date(today.getTime() + 3 * 24 * 60 * 60 * 1000 + 5 * 60 * 60 * 1000), isDerby: false },
+        ];
+        await Fixture.insertMany(initialFixtures);
+        console.log(`Successfully seeded ${initialFixtures.length} static fixtures.`);
     } catch (error) {
-        console.error('Error in seedFixtures:');
-        if (error.response) console.error('API Error:', error.response.data);
-        else console.error('Error Message:', error.message);
+        console.error('Error in seedFixtures:', error);
     }
 };
 
@@ -267,6 +248,17 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         await seedFixtures();
+        
+        // --- NEW: Schedule the scoring job ---
+        // This will run at 3:00 AM UTC every day.
+        cron.schedule('0 3 * * *', () => {
+            console.log('--- Triggering daily automated scoring job ---');
+            runScoringProcess();
+        }, {
+            timezone: "Etc/UTC"
+        });
+        console.log('Automated scoring job scheduled to run daily at 03:00 UTC.');
+
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
         });
