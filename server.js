@@ -61,6 +61,8 @@ const UserSchema = new mongoose.Schema({
 const FixtureSchema = new mongoose.Schema({
     homeTeam: { type: String, required: true },
     awayTeam: { type: String, required: true },
+    homeLogo: { type: String, required: true },
+    awayLogo: { type: String, required: true },
     kickoffTime: { type: Date, required: true },
     isDerby: { type: Boolean, default: false },
     actualScore: {
@@ -224,28 +226,55 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Database Seeding with Static Data ---
+// --- Database Seeding with Live API Data ---
 const seedFixtures = async () => {
     try {
-        await Fixture.deleteMany({});
-        console.log('Seeding database with static fixtures...');
+        const apiKey = process.env.API_FOOTBALL_KEY ? process.env.API_FOOTBALL_KEY.trim() : null;
+        if (!apiKey) {
+            console.log('API_FOOTBALL_KEY not found in .env, skipping fixture seeding.');
+            return;
+        }
+        
+        const fixtureCount = await Fixture.countDocuments();
+        if (fixtureCount > 0) {
+            console.log('Database already contains fixtures. Skipping seed.');
+            return;
+        }
 
-        // --- UPDATED: Create a timezone-aware date for today's match ---
-        const today = new Date();
-        const todayString = today.toLocaleDateString('en-CA', {timeZone: 'Europe/London'}); // Get YYYY-MM-DD for London
-        const kickoffTimeToday = new Date(`${todayString}T20:00:00.000+01:00`); // 8 PM BST
+        console.log('Fetching live fixtures from API-Football...');
 
-        const initialFixtures = [
-            { homeTeam: 'Liverpool', awayTeam: 'Bournemouth', kickoffTime: kickoffTimeToday, isDerby: false },
-            { homeTeam: 'Ipswich', awayTeam: 'Brighton', kickoffTime: new Date(today.getTime() + 1 * 24 * 60 * 60 * 1000), isDerby: false },
-            { homeTeam: 'Arsenal', awayTeam: 'Wolves', kickoffTime: new Date(today.getTime() + 1 * 24 * 60 * 60 * 1000 + 3 * 60 * 60 * 1000), isDerby: false },
-        ];
+        const response = await axios.get('https://v3.football.api-sports.io/fixtures', {
+            params: { 
+                league: '39',
+                season: '2025'
+            },
+            headers: {
+                'x-apisports-key': apiKey
+            }
+        });
 
-        await Fixture.insertMany(initialFixtures);
-        console.log(`Successfully seeded ${initialFixtures.length} static fixtures.`);
+        const fixturesFromApi = response.data.response;
+        if (fixturesFromApi.length === 0) {
+            console.log('API returned 0 fixtures. This is normal if the season has not started yet.');
+            return;
+        }
+        
+        const fixturesToSave = fixturesFromApi.map(f => ({
+            homeTeam: f.teams.home.name,
+            awayTeam: f.teams.away.name,
+            homeLogo: f.teams.home.logo,
+            awayLogo: f.teams.away.logo,
+            kickoffTime: new Date(f.fixture.date),
+            isDerby: (f.teams.home.name.includes("Manchester") && f.teams.away.name.includes("Manchester")) || (f.teams.home.name.includes("Liverpool") && f.teams.away.name.includes("Everton"))
+        }));
+
+        await Fixture.insertMany(fixturesToSave);
+        console.log(`Successfully seeded ${fixturesToSave.length} fixtures from the API.`);
 
     } catch (error) {
-        console.error('Error in seedFixtures:', error);
+        console.error('Error in seedFixtures:');
+        if (error.response) console.error('API Error:', error.response.data);
+        else console.error('Error Message:', error.message);
     }
 };
 
