@@ -224,44 +224,28 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Database Seeding with TheSportsDB API Data ---
+// --- Database Seeding with Static Data ---
 const seedFixtures = async () => {
     try {
-        const apiKey = process.env.THESPORTSDB_API_KEY;
-        if (!apiKey) {
-            console.log('THESPORTSDB_API_KEY not found in .env, skipping fixture seeding.');
-            return;
-        }
-        
         await Fixture.deleteMany({});
-        console.log('Fetching live fixtures from TheSportsDB...');
+        console.log('Seeding database with static fixtures...');
 
-        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsseason.php?id=4328&s=2025-2026`;
-        const response = await axios.get(url);
+        // --- UPDATED: Create a timezone-aware date for today's match ---
+        const today = new Date();
+        const todayString = today.toLocaleDateString('en-CA', {timeZone: 'Europe/London'}); // Get YYYY-MM-DD for London
+        const kickoffTimeToday = new Date(`${todayString}T20:00:00.000+01:00`); // 8 PM BST
 
-        const fixturesFromApi = response.data.events;
-        if (!fixturesFromApi || fixturesFromApi.length === 0) {
-            console.log('API returned 0 fixtures. This is normal if the season schedule is not yet available on TheSportsDB.');
-            return;
-        }
-        
-        const fixturesToSave = fixturesFromApi.map(f => {
-            const kickoff = new Date(`${f.dateEvent}T${f.strTime}`);
-            return {
-                homeTeam: f.strHomeTeam,
-                awayTeam: f.strAwayTeam,
-                kickoffTime: kickoff,
-                isDerby: (f.strHomeTeam.includes("Man") && f.strAwayTeam.includes("Man")) || (f.strHomeTeam === "Liverpool" && f.strAwayTeam === "Everton")
-            };
-        });
+        const initialFixtures = [
+            { homeTeam: 'Liverpool', awayTeam: 'Bournemouth', kickoffTime: kickoffTimeToday, isDerby: false },
+            { homeTeam: 'Ipswich', awayTeam: 'Brighton', kickoffTime: new Date(today.getTime() + 1 * 24 * 60 * 60 * 1000), isDerby: false },
+            { homeTeam: 'Arsenal', awayTeam: 'Wolves', kickoffTime: new Date(today.getTime() + 1 * 24 * 60 * 60 * 1000 + 3 * 60 * 60 * 1000), isDerby: false },
+        ];
 
-        await Fixture.insertMany(fixturesToSave);
-        console.log(`Successfully seeded ${fixturesToSave.length} fixtures from TheSportsDB API.`);
+        await Fixture.insertMany(initialFixtures);
+        console.log(`Successfully seeded ${initialFixtures.length} static fixtures.`);
 
     } catch (error) {
-        console.error('Error in seedFixtures:');
-        if (error.response) console.error('API Error:', error.response.data);
-        else console.error('Error Message:', error.message);
+        console.error('Error in seedFixtures:', error);
     }
 };
 
