@@ -59,6 +59,7 @@ const UserSchema = new mongoose.Schema({
 });
 
 const FixtureSchema = new mongoose.Schema({
+    theSportsDbId: { type: String, required: true, unique: true }, // ID from the API
     homeTeam: { type: String, required: true },
     awayTeam: { type: String, required: true },
     homeLogo: { type: String, required: true },
@@ -86,6 +87,12 @@ const calculatePoints = (prediction, actualScore) => {
 const runScoringProcess = async () => {
     console.log('Running scheduled scoring process...');
     try {
+        const apiKey = process.env.THESPORTSDB_API_KEY;
+        if (!apiKey) {
+            console.log('API key not found, skipping scoring.');
+            return { success: false, message: 'API key not found.' };
+        }
+
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -96,11 +103,36 @@ const runScoringProcess = async () => {
             return { success: true, message: 'No new fixtures to score.' };
         }
 
+        // Fetch the latest results from the API
+        const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventspastleague.php?id=4328`;
+        const resultsResponse = await axios.get(resultsUrl);
+        const latestResults = resultsResponse.data.events;
+
+        if (!latestResults) {
+            console.log('Could not fetch latest results from API.');
+            return { success: false, message: 'Could not fetch latest results.' };
+        }
+
+        const resultsMap = new Map(latestResults.map(r => [r.idEvent, r]));
+
         const fixtureUpdates = fixturesToScore.map(fixture => {
-            fixture.actualScore = { home: Math.floor(Math.random() * 4), away: Math.floor(Math.random() * 3) };
-            return fixture.save();
+            const result = resultsMap.get(fixture.theSportsDbId);
+            if (result && result.intHomeScore != null && result.intAwayScore != null) {
+                fixture.actualScore = {
+                    home: parseInt(result.intHomeScore),
+                    away: parseInt(result.intAwayScore)
+                };
+                return fixture.save();
+            }
+            return Promise.resolve(null); // Resolve null if no result found yet
         });
-        const updatedFixtures = await Promise.all(fixtureUpdates);
+        
+        const updatedFixtures = (await Promise.all(fixtureUpdates)).filter(f => f !== null);
+        if (updatedFixtures.length === 0) {
+            console.log('No matching results found for fixtures needing scores.');
+            return { success: true, message: 'No results to score yet.' };
+        }
+
         const fixturesMap = new Map(updatedFixtures.map(f => [f._id.toString(), f]));
 
         const allUsers = await User.find({});
@@ -120,8 +152,8 @@ const runScoringProcess = async () => {
         });
 
         await Promise.all(userUpdates);
-        console.log(`Scoring complete. ${fixturesToScore.length} fixtures and ${allUsers.length} users updated.`);
-        return { success: true, message: `${fixturesToScore.length} fixtures scored successfully.` };
+        console.log(`Scoring complete. ${updatedFixtures.length} fixtures and ${allUsers.length} users updated.`);
+        return { success: true, message: `${updatedFixtures.length} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
@@ -247,14 +279,14 @@ const seedFixtures = async () => {
             return;
         }
         
-        // TheSportsDB doesn't provide logo URLs in the fixtures endpoint, so we'll use placeholders
         const fixturesToSave = fixturesFromApi.map(f => {
             const kickoff = new Date(`${f.dateEvent}T${f.strTime}`);
             return {
+                theSportsDbId: f.idEvent, // Store the API's unique ID for this match
                 homeTeam: f.strHomeTeam,
                 awayTeam: f.strAwayTeam,
-                homeLogo: `https://www.thesportsdb.com/images/media/team/badge/${f.idHomeTeam}.png` || 'https://placehold.co/96x96/eee/ccc?text=?',
-                awayLogo: `https://www.thesportsdb.com/images/media/team/badge/${f.idAwayTeam}.png` || 'https://placehold.co/96x96/eee/ccc?text=?',
+                homeLogo: f.strHomeTeamBadge || 'https://placehold.co/96x96/eee/ccc?text=?',
+                awayLogo: f.strAwayTeamBadge || 'https://placehold.co/96x96/eee/ccc?text=?',
                 kickoffTime: kickoff,
                 isDerby: (f.strHomeTeam.includes("Man") && f.strAwayTeam.includes("Man")) || (f.strHomeTeam === "Liverpool" && f.strAwayTeam === "Everton")
             };
