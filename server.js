@@ -226,50 +226,42 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Database Seeding with Live API Data ---
+// --- Database Seeding with TheSportsDB API Data ---
 const seedFixtures = async () => {
     try {
-        const apiKey = process.env.API_FOOTBALL_KEY ? process.env.API_FOOTBALL_KEY.trim() : null;
+        const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) {
-            console.log('API_FOOTBALL_KEY not found in .env, skipping fixture seeding.');
+            console.log('THESPORTSDB_API_KEY not found in .env, skipping fixture seeding.');
             return;
         }
         
-        const fixtureCount = await Fixture.countDocuments();
-        if (fixtureCount > 0) {
-            console.log('Database already contains fixtures. Skipping seed.');
+        await Fixture.deleteMany({});
+        console.log('Fetching live fixtures from TheSportsDB...');
+
+        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsseason.php?id=4328&s=2025-2026`;
+        const response = await axios.get(url);
+
+        const fixturesFromApi = response.data.events;
+        if (!fixturesFromApi || fixturesFromApi.length === 0) {
+            console.log('API returned 0 fixtures. This is normal if the season schedule is not yet available on TheSportsDB.');
             return;
         }
-
-        console.log('Fetching live fixtures from API-Football...');
-
-        const response = await axios.get('https://v3.football.api-sports.io/fixtures', {
-            params: { 
-                league: '39',
-                season: '2025'
-            },
-            headers: {
-                'x-apisports-key': apiKey
-            }
+        
+        // TheSportsDB doesn't provide logo URLs in the fixtures endpoint, so we'll use placeholders
+        const fixturesToSave = fixturesFromApi.map(f => {
+            const kickoff = new Date(`${f.dateEvent}T${f.strTime}`);
+            return {
+                homeTeam: f.strHomeTeam,
+                awayTeam: f.strAwayTeam,
+                homeLogo: `https://www.thesportsdb.com/images/media/team/badge/${f.idHomeTeam}.png` || 'https://placehold.co/96x96/eee/ccc?text=?',
+                awayLogo: `https://www.thesportsdb.com/images/media/team/badge/${f.idAwayTeam}.png` || 'https://placehold.co/96x96/eee/ccc?text=?',
+                kickoffTime: kickoff,
+                isDerby: (f.strHomeTeam.includes("Man") && f.strAwayTeam.includes("Man")) || (f.strHomeTeam === "Liverpool" && f.strAwayTeam === "Everton")
+            };
         });
 
-        const fixturesFromApi = response.data.response;
-        if (fixturesFromApi.length === 0) {
-            console.log('API returned 0 fixtures. This is normal if the season has not started yet.');
-            return;
-        }
-        
-        const fixturesToSave = fixturesFromApi.map(f => ({
-            homeTeam: f.teams.home.name,
-            awayTeam: f.teams.away.name,
-            homeLogo: f.teams.home.logo,
-            awayLogo: f.teams.away.logo,
-            kickoffTime: new Date(f.fixture.date),
-            isDerby: (f.teams.home.name.includes("Manchester") && f.teams.away.name.includes("Manchester")) || (f.teams.home.name.includes("Liverpool") && f.teams.away.name.includes("Everton"))
-        }));
-
         await Fixture.insertMany(fixturesToSave);
-        console.log(`Successfully seeded ${fixturesToSave.length} fixtures from the API.`);
+        console.log(`Successfully seeded ${fixturesToSave.length} fixtures from TheSportsDB API.`);
 
     } catch (error) {
         console.error('Error in seedFixtures:');
