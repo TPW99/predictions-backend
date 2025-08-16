@@ -267,7 +267,13 @@ const seedFixtures = async () => {
             return;
         }
         
-        await Fixture.deleteMany({});
+        // --- UPDATED: Only seed if the database is empty ---
+        const fixtureCount = await Fixture.countDocuments();
+        if (fixtureCount > 0) {
+            console.log('Database already contains fixtures. Skipping seed.');
+            return;
+        }
+
         console.log('Fetching live fixtures from TheSportsDB...');
 
         const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsseason.php?id=4328&s=2025-2026`;
