@@ -328,4 +328,13 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
         }, {
             timezone: "Etc/UTC"
         });
-      
+        console.log('Automated scoring job scheduled to run daily at 03:00 UTC.');
+
+        app.listen(PORT, () => {
+            console.log(`Server is running on http://localhost:${PORT}`);
+        });
+    })
+    .catch((error) => {
+        console.error('Error connecting to MongoDB Atlas:', error);
+        console.error(error);
+    });
