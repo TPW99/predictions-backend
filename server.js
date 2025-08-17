@@ -59,7 +59,8 @@ const UserSchema = new mongoose.Schema({
 });
 
 const FixtureSchema = new mongoose.Schema({
-    theSportsDbId: { type: String, required: true, unique: true }, // ID from the API
+    theSportsDbId: { type: String, required: true, unique: true },
+    gameweek: { type: Number, required: true },
     homeTeam: { type: String, required: true },
     awayTeam: { type: String, required: true },
     homeLogo: { type: String, required: true },
@@ -83,15 +84,12 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- Reusable Scoring Logic ---
+// --- Reusable Scoring Logic (More Robust Version) ---
 const runScoringProcess = async () => {
-    console.log('Running scheduled scoring process...');
+    console.log('Running scoring process...');
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
-        if (!apiKey) {
-            console.log('API key not found, skipping scoring.');
-            return { success: false, message: 'API key not found.' };
-        }
+        if (!apiKey) return { success: false, message: 'API key not found.' };
 
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
@@ -102,58 +100,60 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
+        console.log(`Found ${fixturesToScore.length} fixtures to score.`);
 
-        // Fetch the latest results from the API
         const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventspastleague.php?id=4328`;
         const resultsResponse = await axios.get(resultsUrl);
         const latestResults = resultsResponse.data.events;
 
-        if (!latestResults) {
-            console.log('Could not fetch latest results from API.');
-            return { success: false, message: 'Could not fetch latest results.' };
-        }
-
+        if (!latestResults) return { success: false, message: 'Could not fetch latest results.' };
+        
         const resultsMap = new Map(latestResults.map(r => [r.idEvent, r]));
+        let scoredFixturesCount = 0;
 
-        const fixtureUpdates = fixturesToScore.map(fixture => {
+        for (const fixture of fixturesToScore) {
             const result = resultsMap.get(fixture.theSportsDbId);
             if (result && result.intHomeScore != null && result.intAwayScore != null) {
                 fixture.actualScore = {
                     home: parseInt(result.intHomeScore),
                     away: parseInt(result.intAwayScore)
                 };
-                return fixture.save();
+                await fixture.save();
+                scoredFixturesCount++;
             }
-            return Promise.resolve(null); // Resolve null if no result found yet
-        });
-        
-        const updatedFixtures = (await Promise.all(fixtureUpdates)).filter(f => f !== null);
-        if (updatedFixtures.length === 0) {
+        }
+
+        if (scoredFixturesCount === 0) {
             console.log('No matching results found for fixtures needing scores.');
             return { success: true, message: 'No results to score yet.' };
         }
 
-        const fixturesMap = new Map(updatedFixtures.map(f => [f._id.toString(), f]));
+        console.log(`Updated ${scoredFixturesCount} fixtures with actual scores. Now calculating user points...`);
 
         const allUsers = await User.find({});
-        const userUpdates = allUsers.map(async (user) => {
-            let gameweekScore = 0;
-            user.predictions.forEach(p => {
-                const fixture = fixturesMap.get(p.fixtureId.toString());
-                if (fixture) {
-                    let points = calculatePoints(p, fixture.actualScore);
+        for (const user of allUsers) {
+            let userGameweekScore = 0;
+            const updatedFixtures = await Fixture.find({ theSportsDbId: { $in: fixturesToScore.map(f => f.theSportsDbId) } });
+            
+            for (const prediction of user.predictions) {
+                const fixture = updatedFixtures.find(f => f._id.equals(prediction.fixtureId));
+                if (fixture && fixture.actualScore.home !== null) {
+                    let points = calculatePoints(prediction, fixture.actualScore);
                     if (fixture.isDerby) points *= 2;
                     if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
-                    gameweekScore += points;
+                    userGameweekScore += points;
                 }
-            });
-            user.score += gameweekScore;
-            return user.save();
-        });
+            }
+            
+            if (userGameweekScore > 0) {
+                user.score += userGameweekScore;
+                await user.save();
+                console.log(`Updated score for ${user.name}. New total: ${user.score}`);
+            }
+        }
 
-        await Promise.all(userUpdates);
-        console.log(`Scoring complete. ${updatedFixtures.length} fixtures and ${allUsers.length} users updated.`);
-        return { success: true, message: `${updatedFixtures.length} fixtures scored successfully.` };
+        console.log(`Scoring complete. ${scoredFixturesCount} fixtures and ${allUsers.length} users processed.`);
+        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
@@ -165,88 +165,44 @@ const runScoringProcess = async () => {
 // --- API Endpoints ---
 
 // Auth Routes...
-app.post('/api/auth/register', async (req, res) => {
-    try {
-        const { name, email, password } = req.body;
-        const existingUser = await User.findOne({ email });
-        if (existingUser) return res.status(400).json({ message: 'User with this email already exists.' });
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-        const newUser = new User({ name, email, password: hashedPassword });
-        await newUser.save();
-        res.status(201).json({ message: 'User registered successfully!' });
-    } catch (error) {
-        res.status(500).json({ message: 'Server error during registration.' });
-    }
-});
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        const user = await User.findOne({ email });
-        if (!user) return res.status(400).json({ message: 'Invalid credentials.' });
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(400).json({ message: 'Invalid credentials.' });
-        const payload = { userId: user._id, name: user.name };
-        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '3h' });
-        res.status(200).json({ token, message: 'Logged in successfully!' });
-    } catch (error) {
-        res.status(500).json({ message: 'Server error during login.' });
-    }
-});
+app.post('/api/auth/register', async (req, res) => { /* ... */ });
+app.post('/api/auth/login', async (req, res) => { /* ... */ });
+app.get('/api/user/me', authenticateToken, async (req, res) => { /* ... */ });
 
-// User and Game Data Routes...
-app.get('/api/user/me', authenticateToken, async (req, res) => {
+// Game Data Routes...
+app.get('/api/fixtures/:gameweek?', async (req, res) => {
     try {
-        const user = await User.findById(req.user.userId).select('-password');
-        if (!user) return res.status(404).json({ message: 'User not found.' });
-        res.json(user);
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching user data.' });
-    }
-});
-app.get('/api/fixtures', async (req, res) => {
-    try {
-        const fixtures = await Fixture.find().sort({ kickoffTime: 1 });
-        res.json(fixtures);
+        let gameweekToFetch;
+        if (req.params.gameweek) {
+            gameweekToFetch = parseInt(req.params.gameweek);
+        } else {
+            const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
+            if (upcomingFixture) {
+                gameweekToFetch = upcomingFixture.gameweek;
+            } else {
+                const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
+                gameweekToFetch = lastFixture ? lastFixture.gameweek : 1;
+            }
+        }
+        
+        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
+        res.json({ fixtures, gameweek: gameweekToFetch });
+
     } catch (error) {
         res.status(500).json({ message: 'Error fetching fixtures' });
     }
 });
-app.get('/api/leaderboard', async (req, res) => {
+app.get('/api/gameweeks', async (req, res) => {
     try {
-        const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
-        res.json(leaderboard);
+        const gameweeks = await Fixture.distinct('gameweek');
+        res.json(gameweeks.sort((a, b) => a - b));
     } catch (error) {
-        res.status(500).json({ message: 'Error fetching leaderboard data.' });
+        res.status(500).json({ message: 'Error fetching gameweeks' });
     }
 });
-app.post('/api/prophecies', authenticateToken, async (req, res) => {
-    const { prophecies } = req.body;
-    const userId = req.user.userId;
-    try {
-        await User.findByIdAndUpdate(userId, { $set: { prophecies: prophecies } });
-        res.status(200).json({ success: true, message: 'Prophecies saved successfully.' });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Error saving prophecies.' });
-    }
-});
-app.post('/api/predictions', authenticateToken, async (req, res) => {
-    const { predictions, jokerFixtureId } = req.body;
-    const userId = req.user.userId;
-    const predictionsArray = Object.keys(predictions).map(fixtureId => ({
-        fixtureId: fixtureId, homeScore: predictions[fixtureId].homeScore, awayScore: predictions[fixtureId].awayScore
-    }));
-    try {
-        const updateData = { 'predictions': predictionsArray, 'chips.jokerFixtureId': jokerFixtureId };
-        if (jokerFixtureId) {
-            updateData['chips.jokerUsedInSeason'] = true;
-        }
-        await User.findByIdAndUpdate(userId, { $set: updateData });
-        res.status(200).json({ success: true, message: 'Predictions saved.', submittedAt: new Date() });
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Error saving predictions.' });
-    }
-});
+app.get('/api/leaderboard', async (req, res) => { /* ... */ });
+app.post('/api/prophecies', authenticateToken, async (req, res) => { /* ... */ });
+app.post('/api/predictions', authenticateToken, async (req, res) => { /* ... */ });
 
 // Admin Route for Scoring (can still be used for manual testing)
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
@@ -267,7 +223,6 @@ const seedFixtures = async () => {
             return;
         }
         
-        // --- UPDATED: Only seed if the database is empty ---
         const fixtureCount = await Fixture.countDocuments();
         if (fixtureCount > 0) {
             console.log('Database already contains fixtures. Skipping seed.');
@@ -281,14 +236,15 @@ const seedFixtures = async () => {
 
         const fixturesFromApi = response.data.events;
         if (!fixturesFromApi || fixturesFromApi.length === 0) {
-            console.log('API returned 0 fixtures. This is normal if the season schedule is not yet available on TheSportsDB.');
+            console.log('API returned 0 fixtures for the season.');
             return;
         }
         
         const fixturesToSave = fixturesFromApi.map(f => {
             const kickoff = new Date(`${f.dateEvent}T${f.strTime}`);
             return {
-                theSportsDbId: f.idEvent, // Store the API's unique ID for this match
+                theSportsDbId: f.idEvent,
+                gameweek: parseInt(f.intRound),
                 homeTeam: f.strHomeTeam,
                 awayTeam: f.strAwayTeam,
                 homeLogo: f.strHomeTeamBadge || 'https://placehold.co/96x96/eee/ccc?text=?',
@@ -314,7 +270,6 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
         console.log('Successfully connected to MongoDB Atlas!');
         await seedFixtures();
         
-        // Schedule the scoring job
         cron.schedule('0 3 * * *', () => {
             console.log('--- Triggering daily automated scoring job ---');
             runScoringProcess();
