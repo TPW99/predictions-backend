@@ -16,7 +16,15 @@ const PORT = process.env.PORT || 3001;
 
 // --- Middleware ---
 app.use(express.json());
-app.use(cors());
+// --- UPDATED: More robust CORS configuration ---
+// This explicitly allows all origins, which is a safe and effective
+// way to handle this for a public API.
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 
 // --- Authentication Middleware ---
 const authenticateToken = (req, res, next) => {
@@ -84,7 +92,7 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- Reusable Scoring Logic (More Robust Version) ---
+// --- Reusable Scoring Logic ---
 const runScoringProcess = async () => {
     console.log('Running scoring process...');
     try {
@@ -170,18 +178,19 @@ app.post('/api/auth/login', async (req, res) => { /* ... */ });
 app.get('/api/user/me', authenticateToken, async (req, res) => { /* ... */ });
 
 // Game Data Routes...
-// --- UPDATED: Split into two routes to fix deployment error ---
-app.get('/api/fixtures', async (req, res) => {
+app.get('/api/fixtures/:gameweek?', async (req, res) => {
     try {
-        // Find the current gameweek by looking for the first upcoming match
-        const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
         let gameweekToFetch;
-        if (upcomingFixture) {
-            gameweekToFetch = upcomingFixture.gameweek;
+        if (req.params.gameweek) {
+            gameweekToFetch = parseInt(req.params.gameweek);
         } else {
-            // If season is over, default to the last gameweek
-            const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
-            gameweekToFetch = lastFixture ? lastFixture.gameweek : 1;
+            const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
+            if (upcomingFixture) {
+                gameweekToFetch = upcomingFixture.gameweek;
+            } else {
+                const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
+                gameweekToFetch = lastFixture ? lastFixture.gameweek : 1;
+            }
         }
         
         const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
@@ -191,17 +200,6 @@ app.get('/api/fixtures', async (req, res) => {
         res.status(500).json({ message: 'Error fetching fixtures' });
     }
 });
-
-app.get('/api/fixtures/:gameweek', async (req, res) => {
-    try {
-        const gameweekToFetch = parseInt(req.params.gameweek);
-        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
-        res.json({ fixtures, gameweek: gameweekToFetch });
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching fixtures' });
-    }
-});
-
 app.get('/api/gameweeks', async (req, res) => {
     try {
         const gameweeks = await Fixture.distinct('gameweek');
