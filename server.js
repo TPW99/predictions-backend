@@ -16,9 +16,6 @@ const PORT = process.env.PORT || 3001;
 
 // --- Middleware ---
 app.use(express.json());
-// --- UPDATED: More robust CORS configuration ---
-// This explicitly allows all origins, which is a safe and effective
-// way to handle this for a public API.
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -173,24 +170,27 @@ const runScoringProcess = async () => {
 // --- API Endpoints ---
 
 // Auth Routes...
-app.post('/api/auth/register', async (req, res) => { /* ... */ });
-app.post('/api/auth/login', async (req, res) => { /* ... */ });
-app.get('/api/user/me', authenticateToken, async (req, res) => { /* ... */ });
+app.post('/api/auth/register', async (req, res) => {
+    // Implementation from previous steps
+});
+app.post('/api/auth/login', async (req, res) => {
+    // Implementation from previous steps
+});
+app.get('/api/user/me', authenticateToken, async (req, res) => {
+    // Implementation from previous steps
+});
 
 // Game Data Routes...
-app.get('/api/fixtures/:gameweek?', async (req, res) => {
+// --- UPDATED: Split into two routes to fix deployment error ---
+app.get('/api/fixtures', async (req, res) => {
     try {
+        const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
         let gameweekToFetch;
-        if (req.params.gameweek) {
-            gameweekToFetch = parseInt(req.params.gameweek);
+        if (upcomingFixture) {
+            gameweekToFetch = upcomingFixture.gameweek;
         } else {
-            const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
-            if (upcomingFixture) {
-                gameweekToFetch = upcomingFixture.gameweek;
-            } else {
-                const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
-                gameweekToFetch = lastFixture ? lastFixture.gameweek : 1;
-            }
+            const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
+            gameweekToFetch = lastFixture ? lastFixture.gameweek : 1;
         }
         
         const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
@@ -200,6 +200,17 @@ app.get('/api/fixtures/:gameweek?', async (req, res) => {
         res.status(500).json({ message: 'Error fetching fixtures' });
     }
 });
+
+app.get('/api/fixtures/:gameweek', async (req, res) => {
+    try {
+        const gameweekToFetch = parseInt(req.params.gameweek);
+        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
+        res.json({ fixtures, gameweek: gameweekToFetch });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching fixtures' });
+    }
+});
+
 app.get('/api/gameweeks', async (req, res) => {
     try {
         const gameweeks = await Fixture.distinct('gameweek');
@@ -208,9 +219,15 @@ app.get('/api/gameweeks', async (req, res) => {
         res.status(500).json({ message: 'Error fetching gameweeks' });
     }
 });
-app.get('/api/leaderboard', async (req, res) => { /* ... */ });
-app.post('/api/prophecies', authenticateToken, async (req, res) => { /* ... */ });
-app.post('/api/predictions', authenticateToken, async (req, res) => { /* ... */ });
+app.get('/api/leaderboard', async (req, res) => {
+    // Implementation from previous steps
+});
+app.post('/api/prophecies', authenticateToken, async (req, res) => {
+    // Implementation from previous steps
+});
+app.post('/api/predictions', authenticateToken, async (req, res) => {
+    // Implementation from previous steps
+});
 
 // Admin Route for Scoring (can still be used for manual testing)
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
