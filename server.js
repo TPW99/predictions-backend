@@ -1,6 +1,9 @@
 // --- THIS MUST BE THE VERY FIRST LINE ---
 require('dotenv').config(); // This loads the .env file variables
 
+// --- NEW: Version identifier to confirm deployment ---
+console.log('--- SERVER VERSION 2.0 RUNNING ---');
+
 // --- Import necessary packages ---
 const express = require('express');
 const cors =require('cors');
@@ -170,18 +173,11 @@ const runScoringProcess = async () => {
 // --- API Endpoints ---
 
 // Auth Routes...
-app.post('/api/auth/register', async (req, res) => {
-    // Implementation from previous steps
-});
-app.post('/api/auth/login', async (req, res) => {
-    // Implementation from previous steps
-});
-app.get('/api/user/me', authenticateToken, async (req, res) => {
-    // Implementation from previous steps
-});
+app.post('/api/auth/register', async (req, res) => { /* ... */ });
+app.post('/api/auth/login', async (req, res) => { /* ... */ });
+app.get('/api/user/me', authenticateToken, async (req, res) => { /* ... */ });
 
 // Game Data Routes...
-// --- UPDATED: Split into two routes to fix deployment error ---
 app.get('/api/fixtures', async (req, res) => {
     try {
         const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
@@ -219,15 +215,9 @@ app.get('/api/gameweeks', async (req, res) => {
         res.status(500).json({ message: 'Error fetching gameweeks' });
     }
 });
-app.get('/api/leaderboard', async (req, res) => {
-    // Implementation from previous steps
-});
-app.post('/api/prophecies', authenticateToken, async (req, res) => {
-    // Implementation from previous steps
-});
-app.post('/api/predictions', authenticateToken, async (req, res) => {
-    // Implementation from previous steps
-});
+app.get('/api/leaderboard', async (req, res) => { /* ... */ });
+app.post('/api/prophecies', authenticateToken, async (req, res) => { /* ... */ });
+app.post('/api/predictions', authenticateToken, async (req, res) => { /* ... */ });
 
 // Admin Route for Scoring (can still be used for manual testing)
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
