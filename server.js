@@ -1,9 +1,6 @@
 // --- THIS MUST BE THE VERY FIRST LINE ---
 require('dotenv').config(); // This loads the .env file variables
 
-// --- NEW: Version identifier to confirm deployment ---
-console.log('--- SERVER VERSION 2.0 RUNNING ---');
-
 // --- Import necessary packages ---
 const express = require('express');
 const cors =require('cors');
@@ -172,54 +169,86 @@ const runScoringProcess = async () => {
 
 // --- API Endpoints ---
 
-// Auth Routes...
-app.post('/api/auth/register', async (req, res) => { /* ... */ });
-app.post('/api/auth/login', async (req, res) => { /* ... */ });
-app.get('/api/user/me', authenticateToken, async (req, res) => { /* ... */ });
-
-// Game Data Routes...
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+        const existingUser = await User.findOne({ email });
+        if (existingUser) return res.status(400).json({ message: 'User with this email already exists.' });
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        const newUser = new User({ name, email, password: hashedPassword });
+        await newUser.save();
+        res.status(201).json({ message: 'User registered successfully!' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error during registration.' });
+    }
+});
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ message: 'Invalid credentials.' });
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(400).json({ message: 'Invalid credentials.' });
+        const payload = { userId: user._id, name: user.name };
+        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '3h' });
+        res.status(200).json({ token, message: 'Logged in successfully!' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error during login.' });
+    }
+});
+app.get('/api/user/me', authenticateToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.userId).select('-password');
+        if (!user) return res.status(404).json({ message: 'User not found.' });
+        res.json(user);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching user data.' });
+    }
+});
 app.get('/api/fixtures', async (req, res) => {
     try {
-        const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
-        let gameweekToFetch;
-        if (upcomingFixture) {
-            gameweekToFetch = upcomingFixture.gameweek;
-        } else {
-            const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
-            gameweekToFetch = lastFixture ? lastFixture.gameweek : 1;
+        const fixtures = await Fixture.find().sort({ kickoffTime: 1 });
+        res.json({ fixtures }); // Revert to simpler fixture response
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching fixtures' });
+    }
+});
+app.get('/api/leaderboard', async (req, res) => {
+    try {
+        const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
+        res.json(leaderboard);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching leaderboard data.' });
+    }
+});
+app.post('/api/prophecies', authenticateToken, async (req, res) => {
+    const { prophecies } = req.body;
+    const userId = req.user.userId;
+    try {
+        await User.findByIdAndUpdate(userId, { $set: { prophecies: prophecies } });
+        res.status(200).json({ success: true, message: 'Prophecies saved successfully.' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error saving prophecies.' });
+    }
+});
+app.post('/api/predictions', authenticateToken, async (req, res) => {
+    const { predictions, jokerFixtureId } = req.body;
+    const userId = req.user.userId;
+    const predictionsArray = Object.keys(predictions).map(fixtureId => ({
+        fixtureId: fixtureId, homeScore: predictions[fixtureId].homeScore, awayScore: predictions[fixtureId].awayScore
+    }));
+    try {
+        const updateData = { 'predictions': predictionsArray, 'chips.jokerFixtureId': jokerFixtureId };
+        if (jokerFixtureId) {
+            updateData['chips.jokerUsedInSeason'] = true;
         }
-        
-        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
-        res.json({ fixtures, gameweek: gameweekToFetch });
-
+        await User.findByIdAndUpdate(userId, { $set: updateData });
+        res.status(200).json({ success: true, message: 'Predictions saved.', submittedAt: new Date() });
     } catch (error) {
-        res.status(500).json({ message: 'Error fetching fixtures' });
+        res.status(500).json({ success: false, message: 'Error saving predictions.' });
     }
 });
-
-app.get('/api/fixtures/:gameweek', async (req, res) => {
-    try {
-        const gameweekToFetch = parseInt(req.params.gameweek);
-        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
-        res.json({ fixtures, gameweek: gameweekToFetch });
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching fixtures' });
-    }
-});
-
-app.get('/api/gameweeks', async (req, res) => {
-    try {
-        const gameweeks = await Fixture.distinct('gameweek');
-        res.json(gameweeks.sort((a, b) => a - b));
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching gameweeks' });
-    }
-});
-app.get('/api/leaderboard', async (req, res) => { /* ... */ });
-app.post('/api/prophecies', authenticateToken, async (req, res) => { /* ... */ });
-app.post('/api/predictions', authenticateToken, async (req, res) => { /* ... */ });
-
-// Admin Route for Scoring (can still be used for manual testing)
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
     if (result.success) {
