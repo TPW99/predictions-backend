@@ -169,6 +169,7 @@ const runScoringProcess = async () => {
 
 // --- API Endpoints ---
 
+// Auth Routes...
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { name, email, password } = req.body;
@@ -197,6 +198,8 @@ app.post('/api/auth/login', async (req, res) => {
         res.status(500).json({ message: 'Server error during login.' });
     }
 });
+
+// User and Game Data Routes...
 app.get('/api/user/me', authenticateToken, async (req, res) => {
     try {
         const user = await User.findById(req.user.userId).select('-password');
@@ -209,7 +212,7 @@ app.get('/api/user/me', authenticateToken, async (req, res) => {
 app.get('/api/fixtures', async (req, res) => {
     try {
         const fixtures = await Fixture.find().sort({ kickoffTime: 1 });
-        res.json({ fixtures }); // Revert to simpler fixture response
+        res.json({ fixtures });
     } catch (error) {
         res.status(500).json({ message: 'Error fetching fixtures' });
     }
@@ -249,6 +252,8 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving predictions.' });
     }
 });
+
+// Admin Route for Scoring (can still be used for manual testing)
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
     if (result.success) {
