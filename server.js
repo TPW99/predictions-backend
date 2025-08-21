@@ -7,7 +7,6 @@ const cors =require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const axios = require('axios');
 const cron = require('node-cron');
 
 // --- Create the Express App ---
@@ -64,7 +63,6 @@ const UserSchema = new mongoose.Schema({
 });
 
 const FixtureSchema = new mongoose.Schema({
-    theSportsDbId: { type: String, required: true, unique: true },
     gameweek: { type: Number, required: true },
     homeTeam: { type: String, required: true },
     awayTeam: { type: String, required: true },
@@ -89,16 +87,13 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- Reusable Scoring Logic (More Robust Version) ---
+// --- Reusable Scoring Logic ---
 const runScoringProcess = async () => {
     console.log('Running scoring process...');
     try {
-        const apiKey = process.env.THESPORTSDB_API_KEY;
-        if (!apiKey) return { success: false, message: 'API key not found.' };
-
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
-            'actualScore.home': null 
+            'actualScore.home': { $ne: null } // Only score fixtures that have an actual score
         });
 
         if (fixturesToScore.length === 0) {
@@ -106,47 +101,16 @@ const runScoringProcess = async () => {
             return { success: true, message: 'No new fixtures to score.' };
         }
         console.log(`Found ${fixturesToScore.length} fixtures to score.`);
-
-        // Determine the gameweek to fetch results for
-        const gameweekToFetch = fixturesToScore[0].gameweek;
-        console.log(`Fetching results for Gameweek ${gameweekToFetch}...`);
-
-        const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gameweekToFetch}&s=2025-2026`;
-        const resultsResponse = await axios.get(resultsUrl);
-        const latestResults = resultsResponse.data.events;
-
-        if (!latestResults) return { success: false, message: 'Could not fetch latest results.' };
         
-        const resultsMap = new Map(latestResults.map(r => [r.idEvent, r]));
-        let scoredFixturesCount = 0;
-
-        for (const fixture of fixturesToScore) {
-            const result = resultsMap.get(fixture.theSportsDbId);
-            if (result && result.intHomeScore != null && result.intAwayScore != null) {
-                fixture.actualScore = {
-                    home: parseInt(result.intHomeScore),
-                    away: parseInt(result.intAwayScore)
-                };
-                await fixture.save();
-                scoredFixturesCount++;
-            }
-        }
-
-        if (scoredFixturesCount === 0) {
-            console.log('No matching results found for fixtures needing scores.');
-            return { success: true, message: 'No results to score yet.' };
-        }
-
-        console.log(`Updated ${scoredFixturesCount} fixtures with actual scores. Now calculating user points...`);
-        
+        const fixturesMap = new Map(fixturesToScore.map(f => [f._id.toString(), f]));
         const allUsers = await User.find({});
+
         for (const user of allUsers) {
             let userGameweekScore = 0;
-            const updatedFixtures = await Fixture.find({ theSportsDbId: { $in: fixturesToScore.map(f => f.theSportsDbId) } });
             
             for (const prediction of user.predictions) {
-                const fixture = updatedFixtures.find(f => f._id.equals(prediction.fixtureId));
-                if (fixture && fixture.actualScore.home !== null) {
+                const fixture = fixturesMap.get(prediction.fixtureId.toString());
+                if (fixture) {
                     let points = calculatePoints(prediction, fixture.actualScore);
                     if (fixture.isDerby) points *= 2;
                     if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
@@ -161,8 +125,8 @@ const runScoringProcess = async () => {
             }
         }
 
-        console.log(`Scoring complete. ${scoredFixturesCount} fixtures and ${allUsers.length} users processed.`);
-        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
+        console.log(`Scoring complete. ${fixturesToScore.length} fixtures and ${allUsers.length} users processed.`);
+        return { success: true, message: `${fixturesToScore.length} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
@@ -173,6 +137,7 @@ const runScoringProcess = async () => {
 
 // --- API Endpoints ---
 
+// Auth Routes...
 app.post('/api/auth/register', async (req, res) => {
     // Implementation from previous steps
 });
@@ -182,11 +147,23 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/user/me', authenticateToken, async (req, res) => {
     // Implementation from previous steps
 });
+
+// Game Data Routes...
 app.get('/api/fixtures', async (req, res) => {
-    // Implementation from previous steps
+    try {
+        const fixtures = await Fixture.find().sort({ kickoffTime: 1 });
+        res.json({ fixtures });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching fixtures' });
+    }
 });
 app.get('/api/leaderboard', async (req, res) => {
-    // Implementation from previous steps
+    try {
+        const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
+        res.json(leaderboard);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching leaderboard data.' });
+    }
 });
 app.post('/api/prophecies', authenticateToken, async (req, res) => {
     // Implementation from previous steps
@@ -195,6 +172,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
     // Implementation from previous steps
 });
 
+// Admin Route for Scoring (can still be used for manual testing)
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
     if (result.success) {
@@ -204,53 +182,54 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
-// --- Database Seeding with TheSportsDB API Data ---
+// --- NEW Admin Route for Manually Updating Scores ---
+app.post('/api/admin/update-score', authenticateToken, async (req, res) => {
+    const { fixtureId, homeScore, awayScore } = req.body;
+    // In a real app, you'd add another check here to ensure only admins can do this
+    try {
+        const fixture = await Fixture.findById(fixtureId);
+        if (!fixture) {
+            return res.status(404).json({ message: 'Fixture not found.' });
+        }
+        fixture.actualScore = { home: homeScore, away: awayScore };
+        await fixture.save();
+        res.status(200).json({ success: true, message: 'Fixture score updated successfully.' });
+    } catch (error) {
+        console.error('Error updating score:', error);
+        res.status(500).json({ message: 'Error updating score.' });
+    }
+});
+
+
+// --- Database Seeding with Static Data ---
 const seedFixtures = async () => {
     try {
-        const apiKey = process.env.THESPORTSDB_API_KEY;
-        if (!apiKey) {
-            console.log('THESPORTSDB_API_KEY not found in .env, skipping fixture seeding.');
-            return;
-        }
-        
         const fixtureCount = await Fixture.countDocuments();
         if (fixtureCount > 0) {
             console.log('Database already contains fixtures. Skipping seed.');
             return;
         }
 
-        console.log('Fetching live fixtures from TheSportsDB...');
+        console.log('Seeding database with static fixtures for 2025/26 Gameweek 1...');
 
-        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsseason.php?id=4328&s=2025-2026`;
-        const response = await axios.get(url);
+        const initialFixtures = [
+            { gameweek: 1, homeTeam: 'Liverpool', awayTeam: 'AFC Bournemouth', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/0iZm6OOF1g_M51M4e_Q69A_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/4ltl6D-3jH2x_o0l4q1e_g_96x96.png', kickoffTime: new Date('2025-08-15T19:00:00Z'), isDerby: false },
+            { gameweek: 1, homeTeam: 'Aston Villa', awayTeam: 'Newcastle United', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/N6-HDdY7In-fm-Y6LIADsA_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/96_A_j_1UcH1sNA_JpQ22A_96x96.png', kickoffTime: new Date('2025-08-16T11:30:00Z'), isDerby: false },
+            { gameweek: 1, homeTeam: 'Brighton & Hove Albion', awayTeam: 'Fulham', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/EKIe0e-ZIphOcfYwWr-4cg_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/8_a_fBC_UMkl_M2A_4_tKGg_96x96.png', kickoffTime: new Date('2025-08-16T14:00:00Z'), isDerby: false },
+            { gameweek: 1, homeTeam: 'Sunderland', awayTeam: 'West Ham United', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/SU5-2i_B2iJp12r9322y-g_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/bXyitHBcDm+VwKGHbj9Gag_96x96.png', kickoffTime: new Date('2025-08-16T14:00:00Z'), isDerby: false },
+            { gameweek: 1, homeTeam: 'Tottenham Hotspur', awayTeam: 'Burnley', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/k3Q_m6eVK0h_Hj6nPoW_9g_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/teLLOL2zEXINSAcV1Lw40g_96x96.png', kickoffTime: new Date('2025-08-16T14:00:00Z'), isDerby: false },
+            { gameweek: 1, homeTeam: 'Wolverhampton Wanderers', awayTeam: 'Manchester City', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/ZW73-D_KTZfFOE6C2oSw_g_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/z44l-a0W1v5FmgP1e2SinQ_96x96.png', kickoffTime: new Date('2025-08-16T16:30:00Z'), isDerby: false },
+            { gameweek: 1, homeTeam: 'Chelsea', awayTeam: 'Crystal Palace', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/fhBITrIlbQxhVB60sqHmRw_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/6Al17eKthA2qZf-49536gA_96x96.png', kickoffTime: new Date('2025-08-17T13:00:00Z'), isDerby: true },
+            { gameweek: 1, homeTeam: 'Nottingham Forest', awayTeam: 'Brentford', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/l3qf-XJ23wR1iMdlm20L8g_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/QOUce0o249-fYvS6T2K_cQ_96x96.png', kickoffTime: new Date('2025-08-17T13:00:00Z'), isDerby: false },
+            { gameweek: 1, homeTeam: 'Manchester United', awayTeam: 'Arsenal', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/z44l-a0W1v5FmgP1e2SinQ_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/4us2nCgl6kgZc0t3hpW75Q_96x96.png', kickoffTime: new Date('2025-08-17T15:30:00Z'), isDerby: true },
+            { gameweek: 1, homeTeam: 'Leeds United', awayTeam: 'Everton', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/5dqf3k2-N9n982-4aCRaYQ_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/C3J4B9sbvGy3i42J4x_jow_96x96.png', kickoffTime: new Date('2025-08-18T19:00:00Z'), isDerby: false }
+        ];
 
-        const fixturesFromApi = response.data.events;
-        if (!fixturesFromApi || fixturesFromApi.length === 0) {
-            console.log('API returned 0 fixtures for the season.');
-            return;
-        }
-        
-        const fixturesToSave = fixturesFromApi.map(f => {
-            const kickoff = new Date(`${f.dateEvent}T${f.strTime}`);
-            return {
-                theSportsDbId: f.idEvent,
-                gameweek: parseInt(f.intRound),
-                homeTeam: f.strHomeTeam,
-                awayTeam: f.strAwayTeam,
-                homeLogo: f.strHomeTeamBadge || 'https://placehold.co/96x96/eee/ccc?text=?',
-                awayLogo: f.strAwayTeamBadge || 'https://placehold.co/96x96/eee/ccc?text=?',
-                kickoffTime: kickoff,
-                isDerby: (f.strHomeTeam.includes("Man") && f.strAwayTeam.includes("Man")) || (f.strHomeTeam === "Liverpool" && f.strAwayTeam === "Everton")
-            };
-        });
-
-        await Fixture.insertMany(fixturesToSave);
-        console.log(`Successfully seeded ${fixturesToSave.length} fixtures from TheSportsDB API.`);
+        await Fixture.insertMany(initialFixtures);
+        console.log(`Successfully seeded ${initialFixtures.length} static fixtures.`);
 
     } catch (error) {
-        console.error('Error in seedFixtures:');
-        if (error.response) console.error('API Error:', error.response.data);
-        else console.error('Error Message:', error.message);
+        console.error('Error in seedFixtures:', error);
     }
 };
 
