@@ -209,7 +209,6 @@ app.get('/api/user/me', authenticateToken, async (req, res) => {
         res.status(500).json({ message: 'Error fetching user data.' });
     }
 });
-
 app.get('/api/fixtures', async (req, res) => {
     try {
         const fixtures = await Fixture.find().sort({ kickoffTime: 1 });
