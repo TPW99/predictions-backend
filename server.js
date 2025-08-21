@@ -107,28 +107,26 @@ const runScoringProcess = async () => {
         }
         console.log(`Found ${fixturesToScore.length} fixtures to score.`);
 
-        // Determine the gameweek to fetch results for
-        const gameweekToFetch = fixturesToScore[0].gameweek;
-        console.log(`Fetching results for Gameweek ${gameweekToFetch}...`);
-
-        const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gameweekToFetch}`;
-        const resultsResponse = await axios.get(resultsUrl);
-        const latestResults = resultsResponse.data.events;
-
-        if (!latestResults) return { success: false, message: 'Could not fetch latest results.' };
-        
-        const resultsMap = new Map(latestResults.map(r => [r.idEvent, r]));
         let scoredFixturesCount = 0;
+        const updatedFixturesForScoring = [];
 
         for (const fixture of fixturesToScore) {
-            const result = resultsMap.get(fixture.theSportsDbId);
-            if (result && result.intHomeScore != null && result.intAwayScore != null) {
-                fixture.actualScore = {
-                    home: parseInt(result.intHomeScore),
-                    away: parseInt(result.intAwayScore)
-                };
-                await fixture.save();
-                scoredFixturesCount++;
+            try {
+                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
+                const resultsResponse = await axios.get(resultsUrl);
+                const result = resultsResponse.data.events && resultsResponse.data.events[0];
+
+                if (result && result.intHomeScore != null && result.intAwayScore != null) {
+                    fixture.actualScore = {
+                        home: parseInt(result.intHomeScore),
+                        away: parseInt(result.intAwayScore)
+                    };
+                    await fixture.save();
+                    updatedFixturesForScoring.push(fixture);
+                    scoredFixturesCount++;
+                }
+            } catch (e) {
+                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
 
@@ -139,14 +137,15 @@ const runScoringProcess = async () => {
 
         console.log(`Updated ${scoredFixturesCount} fixtures with actual scores. Now calculating user points...`);
         
+        const fixturesMap = new Map(updatedFixturesForScoring.map(f => [f._id.toString(), f]));
         const allUsers = await User.find({});
+
         for (const user of allUsers) {
             let userGameweekScore = 0;
-            const updatedFixtures = await Fixture.find({ theSportsDbId: { $in: fixturesToScore.map(f => f.theSportsDbId) } });
             
             for (const prediction of user.predictions) {
-                const fixture = updatedFixtures.find(f => f._id.equals(prediction.fixtureId));
-                if (fixture && fixture.actualScore.home !== null) {
+                const fixture = fixturesMap.get(prediction.fixtureId.toString());
+                if (fixture) {
                     let points = calculatePoints(prediction, fixture.actualScore);
                     if (fixture.isDerby) points *= 2;
                     if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
@@ -210,6 +209,7 @@ app.get('/api/user/me', authenticateToken, async (req, res) => {
         res.status(500).json({ message: 'Error fetching user data.' });
     }
 });
+
 app.get('/api/fixtures', async (req, res) => {
     try {
         const fixtures = await Fixture.find().sort({ kickoffTime: 1 });
