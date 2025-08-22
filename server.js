@@ -144,13 +144,41 @@ const runScoringProcess = async () => {
 
 // Auth Routes...
 app.post('/api/auth/register', async (req, res) => {
-    // Implementation from previous steps
+    try {
+        const { name, email, password } = req.body;
+        const existingUser = await User.findOne({ email });
+        if (existingUser) return res.status(400).json({ message: 'User with this email already exists.' });
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        const newUser = new User({ name, email, password: hashedPassword });
+        await newUser.save();
+        res.status(201).json({ message: 'User registered successfully!' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error during registration.' });
+    }
 });
 app.post('/api/auth/login', async (req, res) => {
-    // Implementation from previous steps
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ message: 'Invalid credentials.' });
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(400).json({ message: 'Invalid credentials.' });
+        const payload = { userId: user._id, name: user.name };
+        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '3h' });
+        res.status(200).json({ token, message: 'Logged in successfully!' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error during login.' });
+    }
 });
 app.get('/api/user/me', authenticateToken, async (req, res) => {
-    // Implementation from previous steps
+    try {
+        const user = await User.findById(req.user.userId).select('-password');
+        if (!user) return res.status(404).json({ message: 'User not found.' });
+        res.json(user);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching user data.' });
+    }
 });
 
 // Game Data Routes...
@@ -163,13 +191,39 @@ app.get('/api/fixtures', async (req, res) => {
     }
 });
 app.get('/api/leaderboard', async (req, res) => {
-    // Implementation from previous steps
+    try {
+        const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
+        res.json(leaderboard);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching leaderboard data.' });
+    }
 });
 app.post('/api/prophecies', authenticateToken, async (req, res) => {
-    // Implementation from previous steps
+    const { prophecies } = req.body;
+    const userId = req.user.userId;
+    try {
+        await User.findByIdAndUpdate(userId, { $set: { prophecies: prophecies } });
+        res.status(200).json({ success: true, message: 'Prophecies saved successfully.' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error saving prophecies.' });
+    }
 });
 app.post('/api/predictions', authenticateToken, async (req, res) => {
-    // Implementation from previous steps
+    const { predictions, jokerFixtureId } = req.body;
+    const userId = req.user.userId;
+    const predictionsArray = Object.keys(predictions).map(fixtureId => ({
+        fixtureId: fixtureId, homeScore: predictions[fixtureId].homeScore, awayScore: predictions[fixtureId].awayScore
+    }));
+    try {
+        const updateData = { 'predictions': predictionsArray, 'chips.jokerFixtureId': jokerFixtureId };
+        if (jokerFixtureId) {
+            updateData['chips.jokerUsedInSeason'] = true;
+        }
+        await User.findByIdAndUpdate(userId, { $set: updateData });
+        res.status(200).json({ success: true, message: 'Predictions saved.', submittedAt: new Date() });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error saving predictions.' });
+    }
 });
 
 // Admin Route for Scoring (can still be used for manual testing)
@@ -185,6 +239,14 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
 // --- Database Seeding with Static Data ---
 const seedFixtures = async () => {
     try {
+        const fixtureCount = await Fixture.countDocuments();
+        if (fixtureCount > 0) {
+            console.log('Database already contains fixtures. Skipping seed.');
+            return;
+        }
+
+        console.log('Seeding database with static fixtures for 2025/26...');
+
         const initialFixtures = [
             // Gameweek 1
             { gameweek: 1, homeTeam: 'Liverpool', awayTeam: 'AFC Bournemouth', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/0iZm6OOF1g_M51M4e_Q69A_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/4ltl6D-3jH2x_o0l4q1e_g_96x96.png', kickoffTime: new Date('2025-08-15T19:00:00Z'), isDerby: false },
@@ -211,16 +273,8 @@ const seedFixtures = async () => {
             { gameweek: 2, homeTeam: 'Newcastle United', awayTeam: 'Liverpool', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/96_A_j_1UcH1sNA_JpQ22A_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/0iZm6OOF1g_M51M4e_Q69A_96x96.png', kickoffTime: new Date('2025-08-25T19:00:00Z'), isDerby: false }
         ];
 
-        const existingGameweeks = await Fixture.distinct('gameweek');
-        const fixturesToAdd = initialFixtures.filter(f => !existingGameweeks.includes(f.gameweek));
-
-        if (fixturesToAdd.length > 0) {
-            console.log(`Adding ${fixturesToAdd.length} new fixtures to the database...`);
-            await Fixture.insertMany(fixturesToAdd);
-            console.log('New fixtures seeded successfully!');
-        } else {
-            console.log('No new gameweeks to add. Fixture list is up to date.');
-        }
+        await Fixture.insertMany(initialFixtures);
+        console.log(`Successfully seeded ${initialFixtures.length} static fixtures.`);
 
     } catch (error) {
         console.error('Error in seedFixtures:', error);
