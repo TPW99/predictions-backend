@@ -181,14 +181,6 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
 // --- Database Seeding with Static Data ---
 const seedFixtures = async () => {
     try {
-        const fixtureCount = await Fixture.countDocuments();
-        if (fixtureCount > 0) {
-            console.log('Database already contains fixtures. Skipping seed.');
-            return;
-        }
-
-        console.log('Seeding database with static fixtures for 2025/26...');
-
         const initialFixtures = [
             // Gameweek 1
             { gameweek: 1, homeTeam: 'Liverpool', awayTeam: 'AFC Bournemouth', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/0iZm6OOF1g_M51M4e_Q69A_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/4ltl6D-3jH2x_o0l4q1e_g_96x96.png', kickoffTime: new Date('2025-08-15T19:00:00Z'), isDerby: false },
