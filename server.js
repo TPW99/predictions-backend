@@ -113,7 +113,6 @@ const scrapeAndSeedFixtures = async (gameweek) => {
 
         const fixturesFromScraper = [];
         
-        // --- UPDATED: Using correct selectors for the Premier League website ---
         $('.fixture').each((index, element) => {
             const homeTeamElement = $(element).find('.team.home .name');
             const awayTeamElement = $(element).find('.team.away .name');
@@ -129,7 +128,6 @@ const scrapeAndSeedFixtures = async (gameweek) => {
                     homeTeam,
                     awayTeam,
                     kickoffTime: new Date(parseInt(kickoffTimestamp)),
-                    // Using placeholders as logos are harder to scrape reliably
                     homeLogo: 'https://placehold.co/96x96/eee/ccc?text=?',
                     awayLogo: 'https://placehold.co/96x96/eee/ccc?text=?',
                     isDerby: (homeTeam.includes("Man") && awayTeam.includes("Man")) || (homeTeam.includes("Liverpool") && awayTeam.includes("Everton"))
@@ -139,7 +137,6 @@ const scrapeAndSeedFixtures = async (gameweek) => {
 
         if (fixturesFromScraper.length > 0) {
             console.log(`Found ${fixturesFromScraper.length} fixtures. Seeding database...`);
-            // Add logic to only insert new fixtures
             const existingFixtures = await Fixture.find({ gameweek: gameweek });
             if (existingFixtures.length === 0) {
                 await Fixture.insertMany(fixturesFromScraper);
@@ -162,8 +159,18 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        // Example of how we will use the scraper. For now, it's disabled.
-        // await scrapeAndSeedFixtures(3); 
+        // --- UPDATED: Automatically scrape the current gameweek ---
+        const today = new Date();
+        const seasonStart = new Date('2025-08-15');
+        const weekInMillis = 7 * 24 * 60 * 60 * 1000;
+        const currentGameweek = Math.ceil((today - seasonStart) / weekInMillis);
+        
+        if (currentGameweek > 0 && currentGameweek <= 38) {
+            await scrapeAndSeedFixtures(currentGameweek);
+        } else {
+            console.log('Season has not started or has finished. Seeding default Gameweek 1.');
+            await scrapeAndSeedFixtures(1);
+        }
 
         cron.schedule('0 3 * * *', () => {
             console.log('--- Triggering daily automated scoring job ---');
