@@ -96,7 +96,78 @@ const runScoringProcess = async () => {
 
 
 // --- API Endpoints ---
-// ... (All API endpoints remain the same)
+
+app.post('/api/auth/register', async (req, res) => {
+    // ... (logic from previous steps)
+});
+app.post('/api/auth/login', async (req, res) => {
+    // ... (logic from previous steps)
+});
+app.get('/api/user/me', authenticateToken, async (req, res) => {
+    // ... (logic from previous steps)
+});
+
+// --- UPDATED Game Data Routes ---
+
+// Route to get fixtures for a specific gameweek
+app.get('/api/fixtures/:gameweek', async (req, res) => {
+    try {
+        const gameweekToFetch = parseInt(req.params.gameweek);
+        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
+        res.json({ fixtures, gameweek: gameweekToFetch });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching fixtures for specified gameweek' });
+    }
+});
+
+// Route to get fixtures for the current gameweek (if none is specified)
+app.get('/api/fixtures', async (req, res) => {
+    try {
+        const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
+        let gameweekToFetch;
+        if (upcomingFixture) {
+            gameweekToFetch = upcomingFixture.gameweek;
+        } else {
+            const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
+            gameweekToFetch = lastFixture ? lastFixture.gameweek : 1;
+        }
+        
+        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
+        res.json({ fixtures, gameweek: gameweekToFetch });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching current fixtures' });
+    }
+});
+
+// NEW endpoint to get all gameweek numbers
+app.get('/api/gameweeks', async (req, res) => {
+    try {
+        const gameweeks = await Fixture.distinct('gameweek');
+        res.json(gameweeks.sort((a, b) => a - b));
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching gameweeks' });
+    }
+});
+
+app.get('/api/leaderboard', async (req, res) => {
+    try {
+        const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
+        res.json(leaderboard);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching leaderboard data.' });
+    }
+});
+
+app.post('/api/prophecies', authenticateToken, async (req, res) => {
+    // ... (logic from previous steps)
+});
+app.post('/api/predictions', authenticateToken, async (req, res) => {
+    // ... (logic from previous steps)
+});
+app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
+    // ... (logic from previous steps)
+});
 
 
 // --- Web Scraper for Fixtures ---
@@ -159,7 +230,6 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        // --- UPDATED: Automatically scrape the current gameweek ---
         const today = new Date();
         const seasonStart = new Date('2025-08-15');
         const weekInMillis = 7 * 24 * 60 * 60 * 1000;
@@ -188,3 +258,4 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
