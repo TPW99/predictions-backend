@@ -8,7 +8,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
-const cheerio = require('cheerio'); // <-- NEW: For parsing HTML
+const cheerio = require('cheerio'); // For parsing HTML
 const cron = require('node-cron');
 
 // --- Create the Express App ---
@@ -99,48 +99,54 @@ const runScoringProcess = async () => {
 // ... (All API endpoints remain the same)
 
 
-// --- NEW: Web Scraper for Fixtures ---
+// --- Web Scraper for Fixtures ---
 const scrapeAndSeedFixtures = async (gameweek) => {
     try {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
-        const url = `https://www.premierleague.com/en/matches?competition=8&season=2025&matchweek=${gameweek}`;
+        const url = `https://www.premierleague.com/matches?co=1&se=578&mw=${gameweek}`;
 
-        // 1. Fetch the HTML from the Premier League website
-        const { data } = await axios.get(url);
+        const { data } = await axios.get(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+        });
         
-        // 2. Load the HTML into Cheerio so we can parse it
         const $ = cheerio.load(data);
 
         const fixturesFromScraper = [];
+        
+        // --- UPDATED: Using correct selectors for the Premier League website ---
+        $('.match-fixture').each((index, element) => {
+            const homeTeamElement = $(element).find('.team.home .team-name');
+            const awayTeamElement = $(element).find('.team.away .team-name');
+            const kickoffTimeElement = $(element).find('.kickoff');
 
-        // 3. Find the fixture list and loop through each match
-        //    (We will find the correct CSS selector for this in the next step)
-        $('.fixture-list .match-fixture').each((index, element) => {
-            // 4. For each match, find and extract the data
-            //    (These are placeholders - we will find the real selectors next)
-            const homeTeam = $(element).find('.team.home .name').text();
-            const awayTeam = $(element).find('.team.away .name').text();
-            const kickoffTime = $(element).find('.kickoff').attr('data-time');
-            
-            // ... add more logic to get logos, etc.
+            const homeTeam = homeTeamElement.text().trim();
+            const awayTeam = awayTeamElement.text().trim();
+            const kickoffTimestamp = kickoffTimeElement.attr('data-kickoff');
 
-            if (homeTeam && awayTeam && kickoffTime) {
+            if (homeTeam && awayTeam && kickoffTimestamp) {
                 fixturesFromScraper.push({
                     gameweek,
                     homeTeam,
                     awayTeam,
-                    kickoffTime: new Date(parseInt(kickoffTime)),
-                    // Add placeholder logos for now
+                    kickoffTime: new Date(parseInt(kickoffTimestamp)),
+                    // Using placeholders as logos are harder to scrape reliably
                     homeLogo: 'https://placehold.co/96x96/eee/ccc?text=?',
-                    awayLogo: 'https://placehold.co/96x96/eee/ccc?text=?'
+                    awayLogo: 'https://placehold.co/96x96/eee/ccc?text=?',
+                    isDerby: (homeTeam.includes("Man") && awayTeam.includes("Man")) || (homeTeam.includes("Liverpool") && awayTeam.includes("Everton"))
                 });
             }
         });
 
         if (fixturesFromScraper.length > 0) {
             console.log(`Found ${fixturesFromScraper.length} fixtures. Seeding database...`);
-            await Fixture.insertMany(fixturesFromScraper);
-            console.log('Database seeded successfully from scraper!');
+            // Add logic to only insert new fixtures
+            const existingFixtures = await Fixture.find({ gameweek: gameweek });
+            if (existingFixtures.length === 0) {
+                await Fixture.insertMany(fixturesFromScraper);
+                console.log('Database seeded successfully from scraper!');
+            } else {
+                console.log(`Gameweek ${gameweek} already exists in the database. Skipping seed.`);
+            }
         } else {
             console.log('Could not find any fixtures on the page. The website layout may have changed.');
         }
@@ -156,8 +162,7 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        // We can manually trigger the scraper for a specific gameweek here for testing
-        // For now, we will leave the old static seeding in place until the scraper is complete.
+        // Example of how we will use the scraper. For now, it's disabled.
         // await scrapeAndSeedFixtures(3); 
 
         cron.schedule('0 3 * * *', () => {
