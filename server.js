@@ -142,7 +142,6 @@ const runScoringProcess = async () => {
 
 // --- API Endpoints ---
 
-// Auth Routes...
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { name, email, password } = req.body;
@@ -180,8 +179,6 @@ app.get('/api/user/me', authenticateToken, async (req, res) => {
         res.status(500).json({ message: 'Error fetching user data.' });
     }
 });
-
-// Game Data Routes...
 app.get('/api/fixtures', async (req, res) => {
     try {
         const fixtures = await Fixture.find().sort({ kickoffTime: 1 });
@@ -226,7 +223,6 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
     }
 });
 
-// Admin Route for Scoring (can still be used for manual testing)
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
     if (result.success) {
@@ -239,14 +235,6 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
 // --- Database Seeding with Static Data ---
 const seedFixtures = async () => {
     try {
-        const fixtureCount = await Fixture.countDocuments();
-        if (fixtureCount > 0) {
-            console.log('Database already contains fixtures. Skipping seed.');
-            return;
-        }
-
-        console.log('Seeding database with static fixtures for 2025/26...');
-
         const initialFixtures = [
             // Gameweek 1
             { gameweek: 1, homeTeam: 'Liverpool', awayTeam: 'AFC Bournemouth', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/0iZm6OOF1g_M51M4e_Q69A_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/4ltl6D-3jH2x_o0l4q1e_g_96x96.png', kickoffTime: new Date('2025-08-15T19:00:00Z'), isDerby: false },
@@ -273,8 +261,16 @@ const seedFixtures = async () => {
             { gameweek: 2, homeTeam: 'Newcastle United', awayTeam: 'Liverpool', homeLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/96_A_j_1UcH1sNA_JpQ22A_96x96.png', awayLogo: 'https://ssl.gstatic.com/onebox/media/sports/logos/0iZm6OOF1g_M51M4e_Q69A_96x96.png', kickoffTime: new Date('2025-08-25T19:00:00Z'), isDerby: false }
         ];
 
-        await Fixture.insertMany(initialFixtures);
-        console.log(`Successfully seeded ${initialFixtures.length} static fixtures.`);
+        const existingGameweeks = await Fixture.distinct('gameweek');
+        const fixturesToAdd = initialFixtures.filter(f => !existingGameweeks.includes(f.gameweek));
+
+        if (fixturesToAdd.length > 0) {
+            console.log(`Adding ${fixturesToAdd.length} new fixtures to the database...`);
+            await Fixture.insertMany(fixturesToAdd);
+            console.log('New fixtures seeded successfully!');
+        } else {
+            console.log('No new gameweeks to add. Fixture list is up to date.');
+        }
 
     } catch (error) {
         console.error('Error in seedFixtures:', error);
