@@ -1,6 +1,9 @@
 // --- THIS MUST BE THE VERY FIRST LINE ---
 require('dotenv').config(); // This loads the .env file variables
 
+// --- NEW: Version identifier to confirm deployment ---
+console.log('--- SERVER VERSION 3.0 RUNNING ---');
+
 // --- Import necessary packages ---
 const express = require('express');
 const cors =require('cors');
@@ -19,7 +22,7 @@ app.use(express.json());
 
 // --- UPDATED: More specific CORS configuration for production ---
 const corsOptions = {
-    origin: ['http://localhost:3000', 'plpredictions.netlify.app'], // Allow local dev and your live site
+    origin: ['http://localhost:3000', 'https://plpredictions.netlify.app'], // Allow local dev and your live site
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 };
