@@ -263,6 +263,45 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
+// --- NEW endpoint to get a user's prediction history for a gameweek ---
+app.get('/api/predictions/:userId/:gameweek', async (req, res) => {
+    try {
+        const { userId, gameweek } = req.params;
+        
+        const fixtures = await Fixture.find({ gameweek: parseInt(gameweek) }).sort({ kickoffTime: 1 });
+        if (!fixtures || fixtures.length === 0) {
+            return res.status(404).json({ message: 'Fixtures not found for this gameweek.' });
+        }
+
+        const targetUser = await User.findById(userId);
+        if (!targetUser) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        const fixtureIdsForGameweek = fixtures.map(f => f._id.toString());
+        
+        const predictionsForGameweek = targetUser.predictions.filter(p => 
+            fixtureIdsForGameweek.includes(p.fixtureId.toString())
+        );
+
+        const now = new Date();
+        const history = fixtures
+            .filter(fixture => new Date(fixture.kickoffTime) < now)
+            .map(fixture => {
+                const prediction = predictionsForGameweek.find(p => p.fixtureId.equals(fixture._id));
+                return {
+                    fixture,
+                    prediction: prediction ? { homeScore: prediction.homeScore, awayScore: prediction.awayScore } : null
+                };
+            });
+
+        res.json({ userName: targetUser.name, history });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching prediction history' });
+    }
+});
+
 // --- Database Seeding with Static Data ---
 const seedFixtures = async () => {
     try {
