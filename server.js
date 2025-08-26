@@ -179,43 +179,12 @@ app.get('/api/user/me', authenticateToken, async (req, res) => {
         res.status(500).json({ message: 'Error fetching user data.' });
     }
 });
-
-// --- UPDATED: Split into two routes to fix deployment error ---
 app.get('/api/fixtures', async (req, res) => {
     try {
-        const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
-        let gameweekToFetch;
-        if (upcomingFixture) {
-            gameweekToFetch = upcomingFixture.gameweek;
-        } else {
-            const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
-            gameweekToFetch = lastFixture ? lastFixture.gameweek : 1;
-        }
-        
-        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
-        res.json({ fixtures, gameweek: gameweekToFetch });
-
+        const fixtures = await Fixture.find().sort({ kickoffTime: 1 });
+        res.json({ fixtures });
     } catch (error) {
         res.status(500).json({ message: 'Error fetching fixtures' });
-    }
-});
-
-app.get('/api/fixtures/:gameweek', async (req, res) => {
-    try {
-        const gameweekToFetch = parseInt(req.params.gameweek);
-        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
-        res.json({ fixtures, gameweek: gameweekToFetch });
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching fixtures' });
-    }
-});
-
-app.get('/api/gameweeks', async (req, res) => {
-    try {
-        const gameweeks = await Fixture.distinct('gameweek');
-        res.json(gameweeks.sort((a, b) => a - b));
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching gameweeks' });
     }
 });
 app.get('/api/leaderboard', async (req, res) => {
