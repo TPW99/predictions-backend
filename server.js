@@ -19,7 +19,7 @@ app.use(express.json());
 
 // --- UPDATED: More specific CORS configuration for production ---
 const corsOptions = {
-    origin: ['http://localhost:3000', 'YOUR_NETLIFY_URL_HERE'], // Allow local dev and your live site
+    origin: ['http://localhost:3000', 'plpredictions.netlify.app'], // Allow local dev and your live site
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 };
