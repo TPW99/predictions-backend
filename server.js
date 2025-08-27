@@ -136,7 +136,6 @@ app.get('/api/user/me', authenticateToken, async (req, res) => {
     }
 });
 
-// --- UPDATED: Split into two routes to fix deployment error ---
 app.get('/api/fixtures', async (req, res) => {
     try {
         const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
@@ -186,10 +185,31 @@ app.get('/api/leaderboard', async (req, res) => {
 });
 
 app.post('/api/prophecies', authenticateToken, async (req, res) => {
-    // ... (logic from previous versions)
+    const { prophecies } = req.body;
+    const userId = req.user.userId;
+    try {
+        await User.findByIdAndUpdate(userId, { $set: { prophecies: prophecies } });
+        res.status(200).json({ success: true, message: 'Prophecies saved successfully.' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error saving prophecies.' });
+    }
 });
 app.post('/api/predictions', authenticateToken, async (req, res) => {
-    // ... (logic from previous versions)
+    const { predictions, jokerFixtureId } = req.body;
+    const userId = req.user.userId;
+    const predictionsArray = Object.keys(predictions).map(fixtureId => ({
+        fixtureId: fixtureId, homeScore: predictions[fixtureId].homeScore, awayScore: predictions[fixtureId].awayScore
+    }));
+    try {
+        const updateData = { 'predictions': predictionsArray, 'chips.jokerFixtureId': jokerFixtureId };
+        if (jokerFixtureId) {
+            updateData['chips.jokerUsedInSeason'] = true;
+        }
+        await User.findByIdAndUpdate(userId, { $set: updateData });
+        res.status(200).json({ success: true, message: 'Predictions saved.', submittedAt: new Date() });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error saving predictions.' });
+    }
 });
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
@@ -207,17 +227,13 @@ const scrapeAndSeedFixtures = async (gameweek) => {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
         const url = `https://www.premierleague.com/matches?co=1&se=578&mw=${gameweek}`;
 
-        // 1. Fetch the HTML from the Premier League website
         const { data } = await axios.get(url);
         
-        // 2. Load the HTML into Cheerio so we can parse it
         const $ = cheerio.load(data);
 
         const fixturesFromScraper = [];
 
-        // 3. Find the fixture list and loop through each match
         $('.fixture-list .match-fixture').each((index, element) => {
-            // 4. For each match, find and extract the data
             const homeTeam = $(element).find('.team.home .name').text();
             const awayTeam = $(element).find('.team.away .name').text();
             const kickoffTime = $(element).find('.kickoff').attr('data-time');
@@ -253,9 +269,17 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        // We can manually trigger the scraper for a specific gameweek here for testing
-        // For now, we will leave the old static seeding in place until the scraper is complete.
-        // await scrapeAndSeedFixtures(3); 
+        const today = new Date();
+        const seasonStart = new Date('2025-08-15');
+        const weekInMillis = 7 * 24 * 60 * 60 * 1000;
+        const currentGameweek = Math.ceil((today - seasonStart) / weekInMillis);
+        
+        if (currentGameweek > 0 && currentGameweek <= 38) {
+            await scrapeAndSeedFixtures(currentGameweek);
+        } else {
+            console.log('Season has not started or has finished. Seeding default Gameweek 1.');
+            await scrapeAndSeedFixtures(1);
+        }
 
         cron.schedule('0 3 * * *', () => {
             console.log('--- Triggering daily automated scoring job ---');
