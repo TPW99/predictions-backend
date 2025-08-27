@@ -220,6 +220,20 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
+// --- NEW Admin Route for Manually Triggering Scraper ---
+app.post('/api/admin/run-scraper/:gameweek', authenticateToken, async (req, res) => {
+    try {
+        const gameweek = parseInt(req.params.gameweek);
+        if (isNaN(gameweek) || gameweek < 1 || gameweek > 38) {
+            return res.status(400).json({ message: 'Invalid gameweek number.' });
+        }
+        await scrapeAndSeedFixtures(gameweek);
+        res.status(200).json({ success: true, message: `Scraper run for Gameweek ${gameweek}.` });
+    } catch (error) {
+        res.status(500).json({ message: 'Error running scraper.' });
+    }
+});
+
 
 // --- Web Scraper for Fixtures ---
 const scrapeAndSeedFixtures = async (gameweek) => {
