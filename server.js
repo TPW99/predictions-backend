@@ -8,7 +8,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
-const cheerio = require('cheerio'); // <-- NEW: For parsing HTML
+const cheerio = require('cheerio'); // For parsing HTML
 const cron = require('node-cron');
 
 // --- Create the Express App ---
@@ -96,10 +96,104 @@ const runScoringProcess = async () => {
 
 
 // --- API Endpoints ---
-// ... (All API endpoints remain the same)
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+        const existingUser = await User.findOne({ email });
+        if (existingUser) return res.status(400).json({ message: 'User with this email already exists.' });
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        const newUser = new User({ name, email, password: hashedPassword });
+        await newUser.save();
+        res.status(201).json({ message: 'User registered successfully!' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error during registration.' });
+    }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ message: 'Invalid credentials.' });
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(400).json({ message: 'Invalid credentials.' });
+        const payload = { userId: user._id, name: user.name };
+        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '3h' });
+        res.status(200).json({ token, message: 'Logged in successfully!' });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error during login.' });
+    }
+});
+
+app.get('/api/user/me', authenticateToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.userId).select('-password');
+        if (!user) return res.status(404).json({ message: 'User not found.' });
+        res.json(user);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching user data.' });
+    }
+});
+
+app.get('/api/fixtures/:gameweek?', async (req, res) => {
+    try {
+        let gameweekToFetch;
+        if (req.params.gameweek) {
+            gameweekToFetch = parseInt(req.params.gameweek);
+        } else {
+            const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
+            if (upcomingFixture) {
+                gameweekToFetch = upcomingFixture.gameweek;
+            } else {
+                const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
+                gameweekToFetch = lastFixture ? lastFixture.gameweek : 1;
+            }
+        }
+        
+        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
+        res.json({ fixtures, gameweek: gameweekToFetch });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching fixtures' });
+    }
+});
+
+app.get('/api/gameweeks', async (req, res) => {
+    try {
+        const gameweeks = await Fixture.distinct('gameweek');
+        res.json(gameweeks.sort((a, b) => a - b));
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching gameweeks' });
+    }
+});
+
+app.get('/api/leaderboard', async (req, res) => {
+    try {
+        const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
+        res.json(leaderboard);
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching leaderboard data.' });
+    }
+});
+
+app.post('/api/prophecies', authenticateToken, async (req, res) => {
+    // ... (logic from previous versions)
+});
+app.post('/api/predictions', authenticateToken, async (req, res) => {
+    // ... (logic from previous versions)
+});
+app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
+    const result = await runScoringProcess();
+    if (result.success) {
+        res.status(200).json(result);
+    } else {
+        res.status(500).json(result);
+    }
+});
 
 
-// --- NEW: Web Scraper for Fixtures ---
+// --- Web Scraper for Fixtures ---
 const scrapeAndSeedFixtures = async (gameweek) => {
     try {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
@@ -114,23 +208,18 @@ const scrapeAndSeedFixtures = async (gameweek) => {
         const fixturesFromScraper = [];
 
         // 3. Find the fixture list and loop through each match
-        //    (We will find the correct CSS selector for this in the next step)
         $('.fixture-list .match-fixture').each((index, element) => {
             // 4. For each match, find and extract the data
-            //    (These are placeholders - we will find the real selectors next)
             const homeTeam = $(element).find('.team.home .name').text();
             const awayTeam = $(element).find('.team.away .name').text();
             const kickoffTime = $(element).find('.kickoff').attr('data-time');
             
-            // ... add more logic to get logos, etc.
-
             if (homeTeam && awayTeam && kickoffTime) {
                 fixturesFromScraper.push({
                     gameweek,
                     homeTeam,
                     awayTeam,
                     kickoffTime: new Date(parseInt(kickoffTime)),
-                    // Add placeholder logos for now
                     homeLogo: 'https://placehold.co/96x96/eee/ccc?text=?',
                     awayLogo: 'https://placehold.co/96x96/eee/ccc?text=?'
                 });
