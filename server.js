@@ -8,7 +8,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
-const cheerio = require('cheerio'); // For parsing HTML
+const cheerio = require('cheerio'); // <-- NEW: For parsing HTML
 const cron = require('node-cron');
 
 // --- Create the Express App ---
@@ -96,172 +96,51 @@ const runScoringProcess = async () => {
 
 
 // --- API Endpoints ---
-app.post('/api/auth/register', async (req, res) => {
-    try {
-        const { name, email, password } = req.body;
-        const existingUser = await User.findOne({ email });
-        if (existingUser) return res.status(400).json({ message: 'User with this email already exists.' });
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-        const newUser = new User({ name, email, password: hashedPassword });
-        await newUser.save();
-        res.status(201).json({ message: 'User registered successfully!' });
-    } catch (error) {
-        res.status(500).json({ message: 'Server error during registration.' });
-    }
-});
-
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        const user = await User.findOne({ email });
-        if (!user) return res.status(400).json({ message: 'Invalid credentials.' });
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(400).json({ message: 'Invalid credentials.' });
-        const payload = { userId: user._id, name: user.name };
-        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '3h' });
-        res.status(200).json({ token, message: 'Logged in successfully!' });
-    } catch (error) {
-        res.status(500).json({ message: 'Server error during login.' });
-    }
-});
-
-app.get('/api/user/me', authenticateToken, async (req, res) => {
-    try {
-        const user = await User.findById(req.user.userId).select('-password');
-        if (!user) return res.status(404).json({ message: 'User not found.' });
-        res.json(user);
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching user data.' });
-    }
-});
-
-// --- UPDATED: Split into two routes to fix deployment error ---
-app.get('/api/fixtures', async (req, res) => {
-    try {
-        const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
-        let gameweekToFetch;
-        if (upcomingFixture) {
-            gameweekToFetch = upcomingFixture.gameweek;
-        } else {
-            const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
-            gameweekToFetch = lastFixture ? lastFixture.gameweek : 1;
-        }
-        
-        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
-        res.json({ fixtures, gameweek: gameweekToFetch });
-
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching fixtures' });
-    }
-});
-
-app.get('/api/fixtures/:gameweek', async (req, res) => {
-    try {
-        const gameweekToFetch = parseInt(req.params.gameweek);
-        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
-        res.json({ fixtures, gameweek: gameweekToFetch });
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching fixtures' });
-    }
-});
+// ... (All API endpoints remain the same)
 
 
-app.get('/api/gameweeks', async (req, res) => {
-    try {
-        const gameweeks = await Fixture.distinct('gameweek');
-        res.json(gameweeks.sort((a, b) => a - b));
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching gameweeks' });
-    }
-});
-
-app.get('/api/leaderboard', async (req, res) => {
-    try {
-        const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
-        res.json(leaderboard);
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching leaderboard data.' });
-    }
-});
-
-app.post('/api/prophecies', authenticateToken, async (req, res) => {
-    // ... (logic from previous versions)
-});
-app.post('/api/predictions', authenticateToken, async (req, res) => {
-    // ... (logic from previous versions)
-});
-
-
-app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
-    const result = await runScoringProcess();
-    if (result.success) {
-        res.status(200).json(result);
-    } else {
-        res.status(500).json(result);
-    }
-});
-
-
-// --- NEW Admin Route for Manually Triggering Scraper ---
-app.post('/api/admin/run-scraper/:gameweek', authenticateToken, async (req, res) => {
-    try {
-        const gameweek = parseInt(req.params.gameweek);
-        if (isNaN(gameweek) || gameweek < 1 || gameweek > 38) {
-            return res.status(400).json({ message: 'Invalid gameweek number.' });
-        }
-        await scrapeAndSeedFixtures(gameweek);
-        res.status(200).json({ success: true, message: `Scraper run for Gameweek ${gameweek}.` });
-    } catch (error) {
-        res.status(500).json({ message: 'Error running scraper.' });
-    }
-});
-
-
-// --- Web Scraper for Fixtures ---
+// --- NEW: Web Scraper for Fixtures ---
 const scrapeAndSeedFixtures = async (gameweek) => {
     try {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
         const url = `https://www.premierleague.com/matches?co=1&se=578&mw=${gameweek}`;
 
-        const { data } = await axios.get(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
-        });
+        // 1. Fetch the HTML from the Premier League website
+        const { data } = await axios.get(url);
         
+        // 2. Load the HTML into Cheerio so we can parse it
         const $ = cheerio.load(data);
-        console.log('Successfully downloaded HTML.');
 
         const fixturesFromScraper = [];
-        
-        $('.fixture').each((index, element) => {
-            const homeTeam = $(element).find('[data-home]').text().trim();
-            const awayTeam = $(element).find('[data-away]').text().trim();
-            const kickoffTimestamp = $(element).find('.kickoff').attr('data-kickoff');
-            
-            console.log(`Found Match: ${homeTeam} vs ${awayTeam}`);
 
-            if (homeTeam && awayTeam && kickoffTimestamp) {
+        // 3. Find the fixture list and loop through each match
+        //    (We will find the correct CSS selector for this in the next step)
+        $('.fixture-list .match-fixture').each((index, element) => {
+            // 4. For each match, find and extract the data
+            //    (These are placeholders - we will find the real selectors next)
+            const homeTeam = $(element).find('.team.home .name').text();
+            const awayTeam = $(element).find('.team.away .name').text();
+            const kickoffTime = $(element).find('.kickoff').attr('data-time');
+            
+            // ... add more logic to get logos, etc.
+
+            if (homeTeam && awayTeam && kickoffTime) {
                 fixturesFromScraper.push({
                     gameweek,
                     homeTeam,
                     awayTeam,
-                    kickoffTime: new Date(parseInt(kickoffTimestamp)),
+                    kickoffTime: new Date(parseInt(kickoffTime)),
+                    // Add placeholder logos for now
                     homeLogo: 'https://placehold.co/96x96/eee/ccc?text=?',
-                    awayLogo: 'https://placehold.co/96x96/eee/ccc?text=?',
-                    isDerby: (homeTeam.includes("Man") && awayTeam.includes("Man")) || (homeTeam.includes("Liverpool") && awayTeam.includes("Everton"))
+                    awayLogo: 'https://placehold.co/96x96/eee/ccc?text=?'
                 });
             }
         });
 
         if (fixturesFromScraper.length > 0) {
             console.log(`Found ${fixturesFromScraper.length} fixtures. Seeding database...`);
-            const existingFixtures = await Fixture.find({ gameweek: gameweek });
-            if (existingFixtures.length === 0) {
-                await Fixture.insertMany(fixturesFromScraper);
-                console.log('Database seeded successfully from scraper!');
-            } else {
-                console.log(`Gameweek ${gameweek} already exists in the database. Skipping seed.`);
-            }
+            await Fixture.insertMany(fixturesFromScraper);
+            console.log('Database seeded successfully from scraper!');
         } else {
             console.log('Could not find any fixtures on the page. The website layout may have changed.');
         }
@@ -277,20 +156,17 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        // The scraper will now be triggered manually for testing, or by a cron job in production.
-        // We will no longer seed fixtures on every server start.
+        // We can manually trigger the scraper for a specific gameweek here for testing
+        // For now, we will leave the old static seeding in place until the scraper is complete.
+        // await scrapeAndSeedFixtures(3); 
 
-        cron.schedule('0 4 * * 1', () => { // Run every Monday at 4 AM UTC
-            console.log('--- Triggering weekly automated fixture scraping job ---');
-            const today = new Date();
-            const seasonStart = new Date('2025-08-15');
-            const weekInMillis = 7 * 24 * 60 * 60 * 1000;
-            const currentGameweek = Math.ceil((today - seasonStart) / weekInMillis);
-            if (currentGameweek > 0 && currentGameweek <= 38) {
-                scrapeAndSeedFixtures(currentGameweek + 1); // Scrape for the *next* gameweek
-            }
+        cron.schedule('0 3 * * *', () => {
+            console.log('--- Triggering daily automated scoring job ---');
+            runScoringProcess();
+        }, {
+            timezone: "Etc/UTC"
         });
-        console.log('Automated fixture scraping job scheduled to run weekly.');
+        console.log('Automated scoring job scheduled to run daily at 03:00 UTC.');
 
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
