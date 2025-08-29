@@ -323,7 +323,7 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
 const seedFixturesFromFPL = async () => {
     try {
         const fixtureCount = await Fixture.countDocuments();
-        if (fixtureCount > 300) { // Check if we likely have a full season
+        if (fixtureCount > 300) {
             console.log('Database already contains fixtures. Skipping FPL seed.');
             return;
         }
@@ -334,14 +334,15 @@ const seedFixturesFromFPL = async () => {
         
         const headers = { 
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://fantasy.premierleague.com/fixtures'
         };
 
-        console.log('Fetching bootstrap data...');
+        console.log('--- Step 1: Fetching bootstrap data... ---');
         const bootstrapRes = await axios.get(bootstrapUrl, { headers });
-        console.log('Bootstrap data fetched. Fetching fixtures data...');
+        console.log('--- Step 1 Success: Bootstrap data fetched. ---');
+        
+        console.log('--- Step 2: Fetching fixtures data... ---');
         const fixturesRes = await axios.get(fixturesUrl, { headers });
-        console.log('Fixtures data fetched.');
+        console.log('--- Step 2 Success: Fixtures data fetched. ---');
 
         const teams = bootstrapRes.data.teams;
         const fplFixtures = fixturesRes.data;
@@ -352,7 +353,6 @@ const seedFixturesFromFPL = async () => {
             const homeTeamName = teamsMap.get(fplFixture.team_h);
             const awayTeamName = teamsMap.get(fplFixture.team_a);
 
-            // Simple derby check
             const isDerby = (homeTeamName.includes("Man") && awayTeamName.includes("Man")) || 
                             (homeTeamName === "Arsenal" && awayTeamName === "Tottenham Hotspur") ||
                             (homeTeamName === "Tottenham Hotspur" && awayTeamName === "Arsenal");
@@ -371,7 +371,7 @@ const seedFixturesFromFPL = async () => {
 
         if (fixturesToSave.length > 0) {
             console.log(`Found ${fixturesToSave.length} fixtures. Adding to database...`);
-            await Fixture.deleteMany({}); // Clear old fixtures before seeding
+            await Fixture.deleteMany({});
             await Fixture.insertMany(fixturesToSave);
             console.log('Database seeded successfully from FPL API!');
         } else {
@@ -382,6 +382,7 @@ const seedFixturesFromFPL = async () => {
         console.error('Error during FPL seeding process:', error.message);
         if (error.response) {
              console.error('FPL API responded with status:', error.response.status);
+             console.error('FPL API response data:', error.response.data);
         }
     }
 };
@@ -398,10 +399,10 @@ mongoose.connect(process.env.DATABASE_URL)
             console.log(`Server is running on http://localhost:${PORT}`);
         });
 
-        cron.schedule('0 4 * * *', runScoringProcess); // Run scoring daily at 4 AM UTC
+        cron.schedule('0 4 * * *', runScoringProcess);
         console.log('Automated scoring job scheduled to run daily at 04:00 UTC.');
         
-        cron.schedule('0 5 * * 2', seedFixturesFromFPL); // Re-seed fixtures weekly on Tuesdays
+        cron.schedule('0 5 * * 2', seedFixturesFromFPL);
         console.log('Automated fixture seeding job scheduled to run weekly.');
     })
     .catch((error) => {
