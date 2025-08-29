@@ -94,7 +94,9 @@ const runScoringProcess = async () => {
     console.log('Running scoring process...');
     try {
         const url = 'https://fantasy.premierleague.com/api/fixtures/';
-        const { data: fplFixtures } = await axios.get(url);
+        const { data: fplFixtures } = await axios.get(url, {
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
         
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
@@ -328,8 +330,8 @@ const seedFixturesFromFPL = async () => {
         const fixturesUrl = 'https://fantasy.premierleague.com/api/fixtures/';
         
         const [bootstrapRes, fixturesRes] = await Promise.all([
-            axios.get(bootstrapUrl),
-            axios.get(fixturesUrl)
+            axios.get(bootstrapUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }),
+            axios.get(fixturesUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } })
         ]);
 
         const teams = bootstrapRes.data.teams;
@@ -394,4 +396,3 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
