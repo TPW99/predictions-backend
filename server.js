@@ -174,17 +174,32 @@ const scrapeAndSeedFixtures = async (gameweek) => {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
 
         // --- Step 1: Find the current season ID ---
-        const fixturesPageUrl = 'https://www.premierleague.com/matches'; // <-- CORRECTED URL
+        const fixturesPageUrl = 'https://www.premierleague.com/matches';
         const { data: fixturesPageData } = await axios.get(fixturesPageUrl, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
         });
         const $fixturesPage = cheerio.load(fixturesPageData);
-        const seasonDropdown = $fixturesPage('[data-dropdown-current="Premier League"]');
-        const seasonOptions = JSON.parse(seasonDropdown.attr('data-dropdown-options'));
-        const seasonId = seasonOptions['2025/26']?.id;
+        let seasonId = null;
+        
+        // Find the element that contains the season data, this is a more robust way
+        const seasonElement = $fixturesPage('.current-season');
+        if (seasonElement.length > 0) {
+            const seasonText = seasonElement.text().trim(); // e.g., "2025/26"
+            const [startYear] = seasonText.split('/');
+            // The PL website often uses a season ID that can be found in dropdowns.
+            // Let's try to find it more reliably.
+            const seasonDropdown = $fixturesPage('div[data-dropdown-current="Premier League"]');
+            if(seasonDropdown.length > 0) {
+                 const seasonOptions = JSON.parse(seasonDropdown.attr('data-dropdown-options'));
+                 const currentSeasonKey = Object.keys(seasonOptions).find(key => key.startsWith(startYear));
+                 if(currentSeasonKey) {
+                    seasonId = seasonOptions[currentSeasonKey].id;
+                 }
+            }
+        }
 
         if (!seasonId) {
-            console.log('Could not determine the season ID. The website layout may have changed.');
+            console.log('Could not determine the season ID automatically. This might happen between seasons. The website layout may have changed.');
             return;
         }
         console.log(`Found season ID: ${seasonId}`);
@@ -199,8 +214,8 @@ const scrapeAndSeedFixtures = async (gameweek) => {
         const fixturesFromScraper = [];
         
         $('.fixture').each((index, element) => {
-            const homeTeam = $(element).find('[data-home]').text().trim();
-            const awayTeam = $(element).find('[data-away]').text().trim();
+            const homeTeam = $(element).find('.team.home .name').text().trim();
+            const awayTeam = $(element).find('.team.away .name').text().trim();
             const kickoffTimestamp = $(element).find('.kickoff').attr('data-kickoff');
 
             if (homeTeam && awayTeam && kickoffTimestamp) {
@@ -240,26 +255,27 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
+        // Let's scrape the current gameweek on startup
         const today = new Date();
+        // A simple way to estimate the current gameweek.
+        // This should be made more robust in a real production app.
         const seasonStart = new Date('2025-08-15');
         const weekInMillis = 7 * 24 * 60 * 60 * 1000;
-        const currentGameweek = Math.ceil((today - seasonStart) / weekInMillis);
+        let currentGameweek = Math.ceil((today - seasonStart) / weekInMillis);
+        if (currentGameweek < 1) currentGameweek = 1;
+        if (currentGameweek > 38) currentGameweek = 38;
         
-        if (currentGameweek > 0 && currentGameweek <= 38) {
-            await scrapeAndSeedFixtures(currentGameweek);
-        } else {
-            console.log('Season has not started or has finished. Seeding default Gameweek 1.');
-            await scrapeAndSeedFixtures(1);
-        }
+        await scrapeAndSeedFixtures(currentGameweek);
 
-        cron.schedule('0 4 * * 1', () => { // Run every Monday at 4 AM UTC
+        // Schedule a job to scrape for the *next* gameweek every Monday.
+        cron.schedule('0 4 * * 1', () => { 
             console.log('--- Triggering weekly automated fixture scraping job ---');
             const today = new Date();
             const seasonStart = new Date('2025-08-15');
             const weekInMillis = 7 * 24 * 60 * 60 * 1000;
-            const currentGameweek = Math.ceil((today - seasonStart) / weekInMillis);
-            if (currentGameweek > 0 && currentGameweek <= 38) {
-                scrapeAndSeedFixtures(currentGameweek + 1); // Scrape for the *next* gameweek
+            let gameweekToScrape = Math.ceil((today - seasonStart) / weekInMillis) + 1;
+            if (gameweekToScrape > 0 && gameweekToScrape <= 38) {
+                scrapeAndSeedFixtures(gameweekToScrape);
             }
         });
         console.log('Automated fixture scraping job scheduled to run weekly.');
