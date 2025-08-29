@@ -95,7 +95,10 @@ const runScoringProcess = async () => {
     try {
         const url = 'https://fantasy.premierleague.com/api/fixtures/';
         const { data: fplFixtures } = await axios.get(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3' }
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
+                'Referer': 'https://fantasy.premierleague.com/'
+            }
         });
         
         const fixturesToScore = await Fixture.find({ 
@@ -329,7 +332,10 @@ const seedFixturesFromFPL = async () => {
         const bootstrapUrl = 'https://fantasy.premierleague.com/api/bootstrap-static/';
         const fixturesUrl = 'https://fantasy.premierleague.com/api/fixtures/';
         
-        const headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3' };
+        const headers = { 
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
+            'Referer': 'https://fantasy.premierleague.com/'
+        };
 
         const [bootstrapRes, fixturesRes] = await Promise.all([
             axios.get(bootstrapUrl, { headers }),
