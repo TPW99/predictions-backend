@@ -323,7 +323,7 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
 const seedFixturesFromFPL = async () => {
     try {
         const fixtureCount = await Fixture.countDocuments();
-        if (fixtureCount > 300) {
+        if (fixtureCount > 300) { // Check if we likely have a full season
             console.log('Database already contains fixtures. Skipping FPL seed.');
             return;
         }
@@ -334,6 +334,7 @@ const seedFixturesFromFPL = async () => {
         
         const headers = { 
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://fantasy.premierleague.com/fixtures'
         };
 
         console.log('--- Step 1: Fetching bootstrap data... ---');
@@ -409,4 +410,3 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
