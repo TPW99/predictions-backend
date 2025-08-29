@@ -263,9 +263,28 @@ const scrapeAndSeedFixtures = async (gameweek) => {
     try {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
 
-        // Use the direct /matches URL
-        const url = `https://www.premierleague.com/matches?co=1&se=578&mw=${gameweek}`;
+        // Step 1: Find the current season ID dynamically
+        const mainUrl = 'https://www.premierleague.com/matches';
+        const { data: mainData } = await axios.get(mainUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Origin': 'https://www.premierleague.com',
+                'Referer': 'https://www.premierleague.com/'
+            }
+        });
 
+        const main$ = cheerio.load(mainData);
+        const seasonId = main$('.current-season').attr('data-season-id');
+        
+        if (!seasonId) {
+            console.log('Could not dynamically find season ID. The website layout may have changed.');
+            return;
+        }
+        console.log(`Found current season ID: ${seasonId}`);
+
+        // Step 2: Use the dynamic season ID to build the correct URL
+        const url = `https://www.premierleague.com/matches?co=1&se=${seasonId}&mw=${gameweek}`;
+        
         const { data } = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -300,7 +319,6 @@ const scrapeAndSeedFixtures = async (gameweek) => {
             console.log(`Found ${fixturesFromScraper.length} fixtures. Adding to database...`);
             
             for(const fixtureData of fixturesFromScraper) {
-                // Use updateOne with upsert to avoid duplicates
                 await Fixture.updateOne(
                     { homeTeam: fixtureData.homeTeam, awayTeam: fixtureData.awayTeam, gameweek: fixtureData.gameweek },
                     { $set: fixtureData },
