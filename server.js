@@ -189,7 +189,7 @@ app.get('/api/predictions/:userId/:gameweek', authenticateToken, async(req, res)
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
         const history = user.predictions
-            .filter(p => p.fixtureId.gameweek == gameweek && new Date(p.fixtureId.kickoffTime) < new Date())
+            .filter(p => p.fixtureId && p.fixtureId.gameweek == gameweek && new Date(p.fixtureId.kickoffTime) < new Date())
             .map(p => ({ fixture: p.fixtureId, prediction: { homeScore: p.homeScore, awayScore: p.awayScore } }));
         
         res.json({ userName: user.name, history });
@@ -258,14 +258,13 @@ app.post('/api/admin/run-scraper/:gameweek', authenticateToken, async (req, res)
 });
 
 
-// --- Web Scraper for Fixtures ---
+// --- Web Scraper for Fixtures (UPDATED SELECTORS) ---
 const scrapeAndSeedFixtures = async (gameweek) => {
     try {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
         
-        const year = new Date().getFullYear();
-        // Construct the URL based on the user's finding
-        const url = `https://www.premierleague.com/en/matches?competition=8&season=${year}&matchweek=${gameweek}`;
+        const year = 2025; // Hardcoding for the current season
+        const url = `https://www.premierleague.com/matches?co=1&se=578&mw=${gameweek}`; // Using a known season ID for stability
 
         const { data } = await axios.get(url, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
@@ -274,20 +273,19 @@ const scrapeAndSeedFixtures = async (gameweek) => {
         const $ = cheerio.load(data);
         const fixturesFromScraper = [];
         
-        // This selector will need to be updated if the site structure changes
-        $('.match-fixture').each((index, element) => {
-            const homeTeam = $(element).find('.team-name--home').text().trim();
-            const awayTeam = $(element).find('.team-name--away').text().trim();
-            const kickoffTimestamp = $(element).attr('data-kickoff'); // Assuming a data attribute exists
+        $('li.match-fixture').each((index, element) => {
+            const homeTeam = $(element).find('span.match-fixture__team-name').eq(0).text().trim();
+            const awayTeam = $(element).find('span.match-fixture__team-name').eq(1).text().trim();
+            const kickoffTimestamp = $(element).find('div.match-fixture__kickoff time').attr('datetime');
 
             if (homeTeam && awayTeam && kickoffTimestamp) {
                 fixturesFromScraper.push({
                     gameweek,
                     homeTeam,
                     awayTeam,
-                    kickoffTime: new Date(parseInt(kickoffTimestamp)),
-                    homeLogo: `https://placehold.co/96x96/eee/ccc?text=${homeTeam.substring(0,3)}`,
-                    awayLogo: `https://placehold.co/96x96/eee/ccc?text=${awayTeam.substring(0,3)}`,
+                    kickoffTime: new Date(kickoffTimestamp),
+                    homeLogo: `https://placehold.co/96x96/eee/ccc?text=${homeTeam.substring(0,3).toUpperCase()}`,
+                    awayLogo: `https://placehold.co/96x96/eee/ccc?text=${awayTeam.substring(0,3).toUpperCase()}`,
                     isDerby: (homeTeam.includes("Man") && awayTeam.includes("Man")) || (homeTeam.includes("Liverpool") && awayTeam.includes("Everton"))
                 });
             }
@@ -317,22 +315,24 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
+        // Determine current gameweek and scrape if needed
         const today = new Date();
-        const seasonStart = new Date('2025-08-15');
+        const seasonStart = new Date('2025-08-15T00:00:00Z');
         const weekInMillis = 7 * 24 * 60 * 60 * 1000;
-        let currentGameweek = Math.ceil((today - seasonStart) / weekInMillis);
+        let currentGameweek = Math.floor((today - seasonStart) / weekInMillis) + 1;
         if (currentGameweek < 1) currentGameweek = 1;
         if (currentGameweek > 38) currentGameweek = 38;
         
         await scrapeAndSeedFixtures(currentGameweek);
 
+        // Schedule a job to scrape for the *next* gameweek every Monday.
         cron.schedule('0 4 * * 1', () => { 
             console.log('--- Triggering weekly automated fixture scraping job ---');
             const today = new Date();
-            const seasonStart = new Date('2025-08-15');
+            const seasonStart = new Date('2025-08-15T00:00:00Z');
             const weekInMillis = 7 * 24 * 60 * 60 * 1000;
-            let gameweekToScrape = Math.ceil((today - seasonStart) / weekInMillis) + 1;
-            if (gameweekToScrape > 0 && gameweekToScrape <= 38) {
+            let gameweekToScrape = Math.floor((today - seasonStart) / weekInMillis) + 2; // +2 to get next week
+            if (gameweekToScrape > 1 && gameweekToScrape <= 38) {
                 scrapeAndSeedFixtures(gameweekToScrape);
             }
         });
