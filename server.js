@@ -94,12 +94,7 @@ const runScoringProcess = async () => {
     console.log('Running scoring process...');
     try {
         const url = 'https://fantasy.premierleague.com/api/fixtures/';
-        const { data: fplFixtures } = await axios.get(url, {
-            headers: { 
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
-                'Referer': 'https://fantasy.premierleague.com/'
-            }
-        });
+        const { data: fplFixtures } = await axios.get(url);
         
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
@@ -159,7 +154,7 @@ const runScoringProcess = async () => {
         return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
 
     } catch (error) {
-        console.error('Error during scoring process:', error);
+        console.error('Error during scoring process:', error.message);
         return { success: false, message: 'An error occurred during scoring.' };
     }
 };
@@ -332,14 +327,10 @@ const seedFixturesFromFPL = async () => {
         const bootstrapUrl = 'https://fantasy.premierleague.com/api/bootstrap-static/';
         const fixturesUrl = 'https://fantasy.premierleague.com/api/fixtures/';
         
-        const headers = { 
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
-            'Referer': 'https://fantasy.premierleague.com/'
-        };
-
+        // Simplified request without headers
         const [bootstrapRes, fixturesRes] = await Promise.all([
-            axios.get(bootstrapUrl, { headers }),
-            axios.get(fixturesUrl, { headers })
+            axios.get(bootstrapUrl),
+            axios.get(fixturesUrl)
         ]);
 
         const teams = bootstrapRes.data.teams;
@@ -379,6 +370,9 @@ const seedFixturesFromFPL = async () => {
 
     } catch (error) {
         console.error('Error during FPL seeding process:', error.message);
+        if (error.response) {
+             console.error('FPL API responded with status:', error.response.status);
+        }
     }
 };
 
