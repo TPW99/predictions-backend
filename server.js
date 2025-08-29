@@ -262,12 +262,34 @@ app.post('/api/admin/run-scraper/:gameweek', authenticateToken, async (req, res)
 const scrapeAndSeedFixtures = async (gameweek) => {
     try {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
+        
+        // Step 1: Find the current season ID dynamically
+        const mainUrl = 'https://www.premierleague.com/matches';
+        const { data: mainData } = await axios.get(mainUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Origin': 'https://www.premierleague.com',
+                'Referer': 'https://www.premierleague.com/'
+            }
+        });
 
-        // Use the exact URL provided by the user for testing
-        const url = `https://www.premierleague.com/en/matches?competition=8&season=2025&matchweek=${gameweek}&month=08`;
+        const main$ = cheerio.load(mainData);
+        const seasonDropdownOption = main$('.dropdown.season a[href*="se="]').first();
+        const seasonUrlPart = seasonDropdownOption.attr('href');
+        
+        if (!seasonUrlPart) {
+            console.log('Could not dynamically find season ID. The website layout may have changed.');
+            return;
+        }
+        
+        const seasonId = new URLSearchParams(seasonUrlPart.split('?')[1]).get('se');
+        console.log(`Found current season ID: ${seasonId}`);
+
+        // Step 2: Use the dynamic season ID to build the correct URL
+        const url = `https://www.premierleague.com/matches?co=1&se=${seasonId}&mw=${gameweek}`;
         
         console.log(`Attempting to scrape URL: ${url}`);
-
+        
         const { data } = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -279,7 +301,7 @@ const scrapeAndSeedFixtures = async (gameweek) => {
         const $ = cheerio.load(data);
         const fixturesFromScraper = [];
         
-        // Updated selector to match the current Premier League website structure
+        // This selector is updated for the new website structure
         $('.fixture.match-fixture').each((index, element) => {
             const homeTeam = $(element).find('.team.home .name').text().trim();
             const awayTeam = $(element).find('.team.away .name').text().trim();
