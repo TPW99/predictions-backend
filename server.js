@@ -18,7 +18,7 @@ const PORT = process.env.PORT || 3001;
 // --- Middleware ---
 app.use(express.json());
 app.use(cors({
-    origin: '*',
+    origin: 'https://plpredictions.netlify.app',
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -258,65 +258,56 @@ app.post('/api/admin/run-scraper/:gameweek', authenticateToken, async (req, res)
 });
 
 
-// --- Web Scraper for Fixtures (More Robust Version) ---
+// --- Web Scraper for Fixtures ---
 const scrapeAndSeedFixtures = async (gameweek) => {
     try {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
 
-        // --- Step 1: Find the current season ID ---
-        const mainUrl = 'https://www.premierleague.com/matches';
-        const { data: mainPageData } = await axios.get(mainUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
-        });
-        
-        const $mainPage = cheerio.load(mainPageData);
-        const seasonDropdown = $mainPage('.dropdown[data-dropdown-current="Premier League"]');
-        const seasonOptions = JSON.parse(seasonDropdown.attr('data-dropdown-options') || '{}');
-        const currentSeasonLabel = Object.keys(seasonOptions).find(key => key.includes('2025/26'));
-        const seasonId = currentSeasonLabel ? seasonOptions[currentSeasonLabel].id : null;
+        // Use the direct /matches URL
+        const url = `https://www.premierleague.com/matches?co=1&se=578&mw=${gameweek}`;
 
-        if (!seasonId) {
-            console.log('Could not automatically determine the season ID. The website layout may have changed.');
-            return;
-        }
-        console.log(`Found season ID: ${seasonId}`);
-
-        // --- Step 2: Scrape the specific gameweek using the correct season ID ---
-        const url = `https://www.premierleague.com/matches?co=1&se=${seasonId}&mw=${gameweek}`;
         const { data } = await axios.get(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Origin': 'https://www.premierleague.com',
+                'Referer': 'https://www.premierleague.com/matches'
+            }
         });
         
         const $ = cheerio.load(data);
         const fixturesFromScraper = [];
         
-        $('li.match-fixture').each((index, element) => {
-            const homeTeam = $(element).find('span.match-fixture__team-name').eq(0).text().trim();
-            const awayTeam = $(element).find('span.match-fixture__team-name').eq(1).text().trim();
-            const kickoffTimestamp = $(element).find('div.match-fixture__kickoff time').attr('datetime');
+        $('.fixture.match-fixture').each((index, element) => {
+            const homeTeam = $(element).find('.team.home .name').text().trim();
+            const awayTeam = $(element).find('.team.away .name').text().trim();
+            const kickoffTimestamp = $(element).attr('data-kickoff');
 
             if (homeTeam && awayTeam && kickoffTimestamp) {
+                console.log(`Found: ${homeTeam} vs ${awayTeam}`);
                 fixturesFromScraper.push({
                     gameweek,
                     homeTeam,
                     awayTeam,
-                    kickoffTime: new Date(kickoffTimestamp),
+                    kickoffTime: new Date(parseInt(kickoffTimestamp)),
                     homeLogo: `https://placehold.co/96x96/eee/ccc?text=${homeTeam.substring(0,3).toUpperCase()}`,
                     awayLogo: `https://placehold.co/96x96/eee/ccc?text=${awayTeam.substring(0,3).toUpperCase()}`,
-                    isDerby: (homeTeam.includes("Man") && awayTeam.includes("Man")) || (homeTeam.includes("Liverpool") && awayTeam.includes("Everton"))
+                    isDerby: false // Add logic for derby matches if needed
                 });
             }
         });
 
         if (fixturesFromScraper.length > 0) {
-            console.log(`Found ${fixturesFromScraper.length} fixtures. Seeding database...`);
-            const existingFixtures = await Fixture.find({ gameweek: gameweek });
-            if (existingFixtures.length === 0) {
-                await Fixture.insertMany(fixturesFromScraper);
-                console.log('Database seeded successfully from scraper!');
-            } else {
-                console.log(`Gameweek ${gameweek} already exists in the database. Skipping seed.`);
+            console.log(`Found ${fixturesFromScraper.length} fixtures. Adding to database...`);
+            
+            for(const fixtureData of fixturesFromScraper) {
+                // Use updateOne with upsert to avoid duplicates
+                await Fixture.updateOne(
+                    { homeTeam: fixtureData.homeTeam, awayTeam: fixtureData.awayTeam, gameweek: fixtureData.gameweek },
+                    { $set: fixtureData },
+                    { upsert: true }
+                );
             }
+            console.log('Database seeded/updated successfully from scraper!');
         } else {
             console.log('Could not find any fixtures on the page. The website layout may have changed.');
         }
@@ -328,22 +319,16 @@ const scrapeAndSeedFixtures = async (gameweek) => {
 
 
 // --- Database Connection ---
-mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(process.env.DATABASE_URL)
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        // Determine current gameweek and scrape if needed
-        const today = new Date();
-        const seasonStart = new Date('2025-08-15T00:00:00Z');
-        const weekInMillis = 7 * 24 * 60 * 60 * 1000;
-        let currentGameweek = Math.floor((today - seasonStart) / weekInMillis) + 1;
-        if (currentGameweek < 1) currentGameweek = 1;
-        if (currentGameweek > 38) currentGameweek = 38;
-        
-        await scrapeAndSeedFixtures(currentGameweek);
+        app.listen(PORT, () => {
+            console.log(`Server is running on http://localhost:${PORT}`);
+        });
 
-        // Schedule a job to scrape for the *next* gameweek every Monday.
-        cron.schedule('0 4 * * 1', () => { 
+        // Schedule a job to scrape for the *next* gameweek every Tuesday.
+        cron.schedule('0 5 * * 2', () => { 
             console.log('--- Triggering weekly automated fixture scraping job ---');
             const today = new Date();
             const seasonStart = new Date('2025-08-15T00:00:00Z');
@@ -355,9 +340,6 @@ mongoose.connect(process.env.DATABASE_URL, { useNewUrlParser: true, useUnifiedTo
         });
         console.log('Automated fixture scraping job scheduled to run weekly.');
 
-        app.listen(PORT, () => {
-            console.log(`Server is running on http://localhost:${PORT}`);
-        });
     })
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
