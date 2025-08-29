@@ -240,7 +240,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
 
 
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
-    // This will be updated to use a scraper for results
+    // This will be updated later to use a scraper for results
     res.status(200).json({ message: "Scoring logic to be implemented with scraper."});
 });
 
@@ -258,14 +258,31 @@ app.post('/api/admin/run-scraper/:gameweek', authenticateToken, async (req, res)
 });
 
 
-// --- Web Scraper for Fixtures (UPDATED SELECTORS) ---
+// --- Web Scraper for Fixtures (More Robust Version) ---
 const scrapeAndSeedFixtures = async (gameweek) => {
     try {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
-        
-        const year = 2025; // Hardcoding for the current season
-        const url = `https://www.premierleague.com/matches?co=1&se=578&mw=${gameweek}`; // Using a known season ID for stability
 
+        // --- Step 1: Find the current season ID ---
+        const mainUrl = 'https://www.premierleague.com/matches';
+        const { data: mainPageData } = await axios.get(mainUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+        });
+        
+        const $mainPage = cheerio.load(mainPageData);
+        const seasonDropdown = $mainPage('.dropdown[data-dropdown-current="Premier League"]');
+        const seasonOptions = JSON.parse(seasonDropdown.attr('data-dropdown-options') || '{}');
+        const currentSeasonLabel = Object.keys(seasonOptions).find(key => key.includes('2025/26'));
+        const seasonId = currentSeasonLabel ? seasonOptions[currentSeasonLabel].id : null;
+
+        if (!seasonId) {
+            console.log('Could not automatically determine the season ID. The website layout may have changed.');
+            return;
+        }
+        console.log(`Found season ID: ${seasonId}`);
+
+        // --- Step 2: Scrape the specific gameweek using the correct season ID ---
+        const url = `https://www.premierleague.com/matches?co=1&se=${seasonId}&mw=${gameweek}`;
         const { data } = await axios.get(url, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
         });
