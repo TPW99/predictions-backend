@@ -8,7 +8,6 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
-const cheerio = require('cheerio'); // For parsing HTML
 const cron = require('node-cron');
 
 // --- Create the Express App ---
@@ -65,6 +64,7 @@ const UserSchema = new mongoose.Schema({
 });
 
 const FixtureSchema = new mongoose.Schema({
+    fplId: { type: Number, required: true, unique: true }, // FPL's unique ID for the match
     gameweek: { type: Number, required: true },
     homeTeam: { type: String, required: true },
     awayTeam: { type: String, required: true },
@@ -91,7 +91,72 @@ const calculatePoints = (prediction, actualScore) => {
 
 // --- Reusable Scoring Logic ---
 const runScoringProcess = async () => {
-    // This will be updated later to scrape results
+    console.log('Running scoring process...');
+    try {
+        const url = 'https://fantasy.premierleague.com/api/fixtures/';
+        const { data: fplFixtures } = await axios.get(url);
+        
+        const fixturesToScore = await Fixture.find({ 
+            kickoffTime: { $lt: new Date() }, 
+            'actualScore.home': null 
+        });
+
+        if (fixturesToScore.length === 0) {
+            console.log('No new fixtures to score.');
+            return { success: true, message: 'No new fixtures to score.' };
+        }
+        console.log(`Found ${fixturesToScore.length} fixtures to score.`);
+
+        let scoredFixturesCount = 0;
+        const updatedFixturesForScoring = [];
+
+        for (const fixture of fixturesToScore) {
+            const fplFixture = fplFixtures.find(f => f.id === fixture.fplId);
+            if (fplFixture && fplFixture.finished === true) {
+                fixture.actualScore = {
+                    home: fplFixture.team_h_score,
+                    away: fplFixture.team_a_score
+                };
+                await fixture.save();
+                updatedFixturesForScoring.push(fixture);
+                scoredFixturesCount++;
+            }
+        }
+        
+        if (scoredFixturesCount === 0) {
+            console.log('No matching results found for fixtures needing scores.');
+            return { success: true, message: 'No results to score yet.' };
+        }
+        
+        const fixturesMap = new Map(updatedFixturesForScoring.map(f => [f._id.toString(), f]));
+        const allUsers = await User.find({});
+
+        for (const user of allUsers) {
+            let userGameweekScore = 0;
+            
+            for (const prediction of user.predictions) {
+                const fixture = fixturesMap.get(prediction.fixtureId.toString());
+                if (fixture) {
+                    let points = calculatePoints(prediction, fixture.actualScore);
+                    if (fixture.isDerby) points *= 2;
+                    if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
+                    userGameweekScore += points;
+                }
+            }
+            
+            if (userGameweekScore > 0) {
+                user.score += userGameweekScore;
+                await user.save();
+            }
+        }
+
+        console.log(`Scoring complete. ${scoredFixturesCount} fixtures and ${allUsers.length} users processed.`);
+        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
+
+    } catch (error) {
+        console.error('Error during scoring process:', error);
+        return { success: false, message: 'An error occurred during scoring.' };
+    }
 };
 
 
@@ -240,104 +305,70 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
 
 
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
-    // This will be updated later to use a scraper for results
-    res.status(200).json({ message: "Scoring logic to be implemented with scraper."});
-});
-
-app.post('/api/admin/run-scraper/:gameweek', authenticateToken, async (req, res) => {
-    try {
-        const gameweek = parseInt(req.params.gameweek);
-        if (isNaN(gameweek) || gameweek < 1 || gameweek > 38) {
-            return res.status(400).json({ message: 'Invalid gameweek number.' });
-        }
-        await scrapeAndSeedFixtures(gameweek);
-        res.status(200).json({ success: true, message: `Scraper run for Gameweek ${gameweek}.` });
-    } catch (error) {
-        res.status(500).json({ message: 'Error running scraper.' });
+    const result = await runScoringProcess();
+    if (result.success) {
+        res.status(200).json(result);
+    } else {
+        res.status(500).json(result);
     }
 });
 
 
-// --- Web Scraper for Fixtures ---
-const scrapeAndSeedFixtures = async (gameweek) => {
+// --- FPL API Seeding Logic ---
+const seedFixturesFromFPL = async () => {
     try {
-        console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
-        
-        // Step 1: Find the current season ID dynamically
-        const mainUrl = 'https://www.premierleague.com/matches';
-        const { data: mainData } = await axios.get(mainUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Origin': 'https://www.premierleague.com',
-                'Referer': 'https://www.premierleague.com/'
-            }
-        });
-
-        const main$ = cheerio.load(mainData);
-        const seasonDropdownOption = main$('.dropdown.season a[href*="se="]').first();
-        const seasonUrlPart = seasonDropdownOption.attr('href');
-        
-        if (!seasonUrlPart) {
-            console.log('Could not dynamically find season ID. The website layout may have changed.');
+        const fixtureCount = await Fixture.countDocuments();
+        if (fixtureCount > 300) { // Check if we likely have a full season
+            console.log('Database already contains fixtures. Skipping FPL seed.');
             return;
         }
-        
-        const seasonId = new URLSearchParams(seasonUrlPart.split('?')[1]).get('se');
-        console.log(`Found current season ID: ${seasonId}`);
 
-        // Step 2: Use the dynamic season ID to build the correct URL
-        const url = `https://www.premierleague.com/matches?co=1&se=${seasonId}&mw=${gameweek}`;
+        console.log('Fetching live fixtures from Fantasy Premier League API...');
+        const bootstrapUrl = 'https://fantasy.premierleague.com/api/bootstrap-static/';
+        const fixturesUrl = 'https://fantasy.premierleague.com/api/fixtures/';
         
-        console.log(`Attempting to scrape URL: ${url}`);
-        
-        const { data } = await axios.get(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Origin': 'https://www.premierleague.com',
-                'Referer': 'https://www.premierleague.com/matches'
-            }
-        });
-        
-        const $ = cheerio.load(data);
-        const fixturesFromScraper = [];
-        
-        // This selector is updated for the new website structure
-        $('.fixture.match-fixture').each((index, element) => {
-            const homeTeam = $(element).find('.team.home .name').text().trim();
-            const awayTeam = $(element).find('.team.away .name').text().trim();
-            const kickoffTimestamp = $(element).attr('data-kickoff');
+        const [bootstrapRes, fixturesRes] = await Promise.all([
+            axios.get(bootstrapUrl),
+            axios.get(fixturesUrl)
+        ]);
 
-            if (homeTeam && awayTeam && kickoffTimestamp) {
-                console.log(`Found: ${homeTeam} vs ${awayTeam}`);
-                fixturesFromScraper.push({
-                    gameweek,
-                    homeTeam,
-                    awayTeam,
-                    kickoffTime: new Date(parseInt(kickoffTimestamp)),
-                    homeLogo: `https://placehold.co/96x96/eee/ccc?text=${homeTeam.substring(0,3).toUpperCase()}`,
-                    awayLogo: `https://placehold.co/96x96/eee/ccc?text=${awayTeam.substring(0,3).toUpperCase()}`,
-                    isDerby: false
-                });
-            }
+        const teams = bootstrapRes.data.teams;
+        const fplFixtures = fixturesRes.data;
+
+        const teamsMap = new Map(teams.map(team => [team.id, team.name]));
+        
+        const fixturesToSave = fplFixtures.map(fplFixture => {
+            const homeTeamName = teamsMap.get(fplFixture.team_h);
+            const awayTeamName = teamsMap.get(fplFixture.team_a);
+
+            // Simple derby check
+            const isDerby = (homeTeamName.includes("Man") && awayTeamName.includes("Man")) || 
+                            (homeTeamName === "Arsenal" && awayTeamName === "Tottenham Hotspur") ||
+                            (homeTeamName === "Tottenham Hotspur" && awayTeamName === "Arsenal");
+
+            return {
+                fplId: fplFixture.id,
+                gameweek: fplFixture.event,
+                homeTeam: homeTeamName,
+                awayTeam: awayTeamName,
+                kickoffTime: new Date(fplFixture.kickoff_time),
+                homeLogo: `https://resources.premierleague.com/premierleague/badges/70/t${fplFixture.team_h}.png`,
+                awayLogo: `https://resources.premierleague.com/premierleague/badges/70/t${fplFixture.team_a}.png`,
+                isDerby: isDerby,
+            };
         });
 
-        if (fixturesFromScraper.length > 0) {
-            console.log(`Found ${fixturesFromScraper.length} fixtures. Adding to database...`);
-            
-            for(const fixtureData of fixturesFromScraper) {
-                await Fixture.updateOne(
-                    { homeTeam: fixtureData.homeTeam, awayTeam: fixtureData.awayTeam, gameweek: fixtureData.gameweek },
-                    { $set: fixtureData },
-                    { upsert: true }
-                );
-            }
-            console.log('Database seeded/updated successfully from scraper!');
+        if (fixturesToSave.length > 0) {
+            console.log(`Found ${fixturesToSave.length} fixtures. Adding to database...`);
+            await Fixture.deleteMany({}); // Clear old fixtures before seeding
+            await Fixture.insertMany(fixturesToSave);
+            console.log('Database seeded successfully from FPL API!');
         } else {
-            console.log('Could not find any fixtures on the page. The website layout may have changed.');
+            console.log('Could not find any fixtures from the FPL API.');
         }
 
     } catch (error) {
-        console.error('Error during scraping process:', error.message);
+        console.error('Error during FPL seeding process:', error.message);
     }
 };
 
@@ -347,23 +378,17 @@ mongoose.connect(process.env.DATABASE_URL)
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
+        await seedFixturesFromFPL(); // Run seeder on startup
+
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
         });
 
-        // Schedule a job to scrape for the *next* gameweek every Tuesday.
-        cron.schedule('0 5 * * 2', () => { 
-            console.log('--- Triggering weekly automated fixture scraping job ---');
-            const today = new Date();
-            const seasonStart = new Date('2025-08-15T00:00:00Z');
-            const weekInMillis = 7 * 24 * 60 * 60 * 1000;
-            let gameweekToScrape = Math.floor((today - seasonStart) / weekInMillis) + 2; // +2 to get next week
-            if (gameweekToScrape > 1 && gameweekToScrape <= 38) {
-                scrapeAndSeedFixtures(gameweekToScrape);
-            }
-        });
-        console.log('Automated fixture scraping job scheduled to run weekly.');
-
+        cron.schedule('0 4 * * *', runScoringProcess); // Run scoring daily at 4 AM UTC
+        console.log('Automated scoring job scheduled to run daily at 04:00 UTC.');
+        
+        cron.schedule('0 5 * * 2', seedFixturesFromFPL); // Re-seed fixtures weekly on Tuesdays
+        console.log('Automated fixture seeding job scheduled to run weekly.');
     })
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
