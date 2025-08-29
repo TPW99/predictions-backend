@@ -94,7 +94,12 @@ const runScoringProcess = async () => {
     console.log('Running scoring process...');
     try {
         const url = 'https://fantasy.premierleague.com/api/fixtures/';
-        const { data: fplFixtures } = await axios.get(url);
+        const { data: fplFixtures } = await axios.get(url, {
+             headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Referer': 'https://fantasy.premierleague.com/fixtures'
+            }
+        });
         
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
@@ -327,11 +332,16 @@ const seedFixturesFromFPL = async () => {
         const bootstrapUrl = 'https://fantasy.premierleague.com/api/bootstrap-static/';
         const fixturesUrl = 'https://fantasy.premierleague.com/api/fixtures/';
         
-        // Simplified request without headers
-        const [bootstrapRes, fixturesRes] = await Promise.all([
-            axios.get(bootstrapUrl),
-            axios.get(fixturesUrl)
-        ]);
+        const headers = { 
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://fantasy.premierleague.com/fixtures'
+        };
+
+        console.log('Fetching bootstrap data...');
+        const bootstrapRes = await axios.get(bootstrapUrl, { headers });
+        console.log('Bootstrap data fetched. Fetching fixtures data...');
+        const fixturesRes = await axios.get(fixturesUrl, { headers });
+        console.log('Fixtures data fetched.');
 
         const teams = bootstrapRes.data.teams;
         const fplFixtures = fixturesRes.data;
@@ -398,3 +408,4 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
