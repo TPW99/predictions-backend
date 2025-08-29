@@ -263,28 +263,11 @@ const scrapeAndSeedFixtures = async (gameweek) => {
     try {
         console.log(`Scraping fixtures for Gameweek ${gameweek}...`);
 
-        // Step 1: Find the current season ID dynamically
-        const mainUrl = 'https://www.premierleague.com/matches';
-        const { data: mainData } = await axios.get(mainUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Origin': 'https://www.premierleague.com',
-                'Referer': 'https://www.premierleague.com/'
-            }
-        });
-
-        const main$ = cheerio.load(mainData);
-        const seasonId = main$('.current-season').attr('data-season-id');
+        // Use the exact URL provided by the user for testing
+        const url = `https://www.premierleague.com/en/matches?competition=8&season=2025&matchweek=${gameweek}&month=08`;
         
-        if (!seasonId) {
-            console.log('Could not dynamically find season ID. The website layout may have changed.');
-            return;
-        }
-        console.log(`Found current season ID: ${seasonId}`);
+        console.log(`Attempting to scrape URL: ${url}`);
 
-        // Step 2: Use the dynamic season ID to build the correct URL
-        const url = `https://www.premierleague.com/matches?co=1&se=${seasonId}&mw=${gameweek}`;
-        
         const { data } = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -296,6 +279,7 @@ const scrapeAndSeedFixtures = async (gameweek) => {
         const $ = cheerio.load(data);
         const fixturesFromScraper = [];
         
+        // Updated selector to match the current Premier League website structure
         $('.fixture.match-fixture').each((index, element) => {
             const homeTeam = $(element).find('.team.home .name').text().trim();
             const awayTeam = $(element).find('.team.away .name').text().trim();
@@ -310,7 +294,7 @@ const scrapeAndSeedFixtures = async (gameweek) => {
                     kickoffTime: new Date(parseInt(kickoffTimestamp)),
                     homeLogo: `https://placehold.co/96x96/eee/ccc?text=${homeTeam.substring(0,3).toUpperCase()}`,
                     awayLogo: `https://placehold.co/96x96/eee/ccc?text=${awayTeam.substring(0,3).toUpperCase()}`,
-                    isDerby: false // Add logic for derby matches if needed
+                    isDerby: false
                 });
             }
         });
@@ -363,3 +347,4 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
