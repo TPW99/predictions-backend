@@ -292,34 +292,44 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        const existingPredictionsMap = new Map(user.predictions.map(p => [p.fixtureId.toString(), p]));
+        const updatedPredictions = [...user.predictions];
 
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
             const homeScore = predictionData.homeScore;
             const awayScore = predictionData.awayScore;
 
-            const homeScoreNum = parseInt(homeScore, 10);
-            const awayScoreNum = parseInt(awayScore, 10);
+            const existingIndex = updatedPredictions.findIndex(p => p.fixtureId.toString() === fixtureId);
 
-            if (isNaN(homeScoreNum) || isNaN(awayScoreNum)) {
-                existingPredictionsMap.delete(fixtureId);
+            if (homeScore === '' || awayScore === '' || homeScore === null || awayScore === null) {
+                if (existingIndex > -1) {
+                    updatedPredictions.splice(existingIndex, 1);
+                }
             } else {
-                existingPredictionsMap.set(fixtureId, {
+                const newPrediction = {
                     fixtureId,
-                    homeScore: homeScoreNum,
-                    awayScore: awayScoreNum
-                });
+                    homeScore: parseInt(homeScore),
+                    awayScore: parseInt(awayScore),
+                };
+                if (existingIndex > -1) {
+                    updatedPredictions[existingIndex] = newPrediction;
+                } else {
+                    updatedPredictions.push(newPrediction);
+                }
             }
         }
         
-        user.predictions = Array.from(existingPredictionsMap.values());
-        user.chips.jokerFixtureId = jokerFixtureId;
+        const updateData = {
+            predictions: updatedPredictions,
+            'chips.jokerFixtureId': jokerFixtureId
+        };
+        
         if (jokerFixtureId) {
-            user.chips.jokerUsedInSeason = true;
+            updateData['chips.jokerUsedInSeason'] = true;
         }
 
-        await user.save();
+        await User.updateOne({ _id: userId }, { $set: updateData });
+
         res.status(200).json({ success: true, message: 'Predictions saved.' });
     } catch (error) {
         console.error("Error saving predictions:", error);
