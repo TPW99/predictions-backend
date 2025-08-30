@@ -1,4 +1,3 @@
-
 // --- THIS MUST BE THE VERY FIRST LINE ---
 require('dotenv').config(); // This loads the .env file variables
 
@@ -286,33 +285,27 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
+        // A more robust way to handle updates and deletions
+        const updatedPredictions = user.predictions.filter(p => !predictions[p.fixtureId.toString()]); // Keep predictions not in the submission
+
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            const homeScore = predictionData.homeScore;
-            const awayScore = predictionData.awayScore;
-            
-            const existingPredictionIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
-
-            // If scores are blank, remove the prediction if it exists
-            if (homeScore === '' || awayScore === '') {
-                if (existingPredictionIndex > -1) {
-                    user.predictions.splice(existingPredictionIndex, 1);
-                }
-            } else {
-                // Scores are provided, so update or add
+            if (predictionData.homeScore !== '' && predictionData.awayScore !== '') {
                 const newPrediction = {
                     fixtureId,
-                    homeScore: parseInt(homeScore),
-                    awayScore: parseInt(awayScore)
+                    homeScore: parseInt(predictionData.homeScore),
+                    awayScore: parseInt(predictionData.awayScore)
                 };
-                if (existingPredictionIndex > -1) {
-                    user.predictions[existingPredictionIndex] = newPrediction;
+                const existingIndex = updatedPredictions.findIndex(p => p.fixtureId.toString() === fixtureId);
+                if (existingIndex > -1) {
+                    updatedPredictions[existingIndex] = newPrediction;
                 } else {
-                    user.predictions.push(newPrediction);
+                    updatedPredictions.push(newPrediction);
                 }
             }
         }
         
+        user.predictions = updatedPredictions;
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
@@ -369,19 +362,23 @@ const seedFixturesFromAPI = async () => {
 
         const fixturesToSave = await Promise.all(events.map(async (event) => {
             let homeLogo = '', awayLogo = '';
+            // Generate a fallback logo URL immediately
+            const placeholderHomeLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strHomeTeam.substring(0,3).toUpperCase()}`;
+            const placeholderAwayLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strAwayTeam.substring(0,3).toUpperCase()}`;
+
             try {
                 const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
-                homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || `https://placehold.co/96x96/eee/ccc?text=${event.strHomeTeam.substring(0,3).toUpperCase()}`;
+                homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || placeholderHomeLogo;
             } catch (e) { 
-                homeLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strHomeTeam.substring(0,3).toUpperCase()}`;
+                homeLogo = placeholderHomeLogo;
                 console.error(`Could not fetch home logo for ${event.strHomeTeam}`);
             }
 
             try {
                 const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
-                awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || `https://placehold.co/96x96/eee/ccc?text=${event.strAwayTeam.substring(0,3).toUpperCase()}`;
+                awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || placeholderAwayLogo;
             } catch (e) { 
-                awayLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strAwayTeam.substring(0,3).toUpperCase()}`;
+                awayLogo = placeholderAwayLogo;
                 console.error(`Could not fetch away logo for ${event.strAwayTeam}`);
             }
 
