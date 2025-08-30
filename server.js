@@ -68,8 +68,8 @@ const FixtureSchema = new mongoose.Schema({
     gameweek: { type: Number, required: true },
     homeTeam: { type: String, required: true },
     awayTeam: { type: String, required: true },
-    homeLogo: { type: String, required: true },
-    awayLogo: { type: String, required: true },
+    homeLogo: { type: String }, // No longer required
+    awayLogo: { type: String }, // No longer required
     kickoffTime: { type: Date, required: true },
     isDerby: { type: Boolean, default: false },
     actualScore: {
@@ -374,7 +374,7 @@ const seedFixturesFromAPI = async () => {
         }
 
     } catch (error) {
-        console.error('Error during API seeding process:', error.message);
+        console.error('Error during API seeding process:', error);
     }
 };
 
@@ -399,4 +399,3 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
