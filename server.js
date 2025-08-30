@@ -84,6 +84,7 @@ const Fixture = mongoose.model('Fixture', FixtureSchema);
 
 // --- Helper Function for Scoring ---
 const calculatePoints = (prediction, actualScore) => {
+    // Ensure prediction scores are numbers before comparing
     const predHome = Number(prediction.homeScore);
     const predAway = Number(prediction.awayScore);
 
@@ -96,13 +97,14 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- Reusable Scoring Logic ---
+// --- Reusable Scoring Logic (FINAL ROBUST VERSION) ---
 const runScoringProcess = async () => {
     console.log('Running robust scoring process...');
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
+        // 1. Find all fixtures that have started but have not yet been scored.
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -112,27 +114,18 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
+        console.log(`Found ${fixturesToScore.length} fixtures needing scores.`);
+
+        let scoredFixturesCount = 0;
         
-        const gameweeksToScore = [...new Set(fixturesToScore.map(f => f.gameweek).filter(Boolean))];
-        console.log(`Found fixtures to score in gameweeks: ${gameweeksToScore.join(', ')}`);
+        // 2. Fetch the result for each fixture individually for maximum reliability.
+        for (const fixture of fixturesToScore) {
+            try {
+                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
+                const resultsResponse = await axios.get(resultsUrl);
+                const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
-        let totalScoredFixtures = 0;
-
-        for (const gw of gameweeksToScore) {
-            const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
-            const resultsResponse = await axios.get(resultsUrl);
-            const results = resultsResponse.data.events;
-
-            if (!Array.isArray(results)) { 
-                console.log(`No array of results for gameweek ${gw}. Skipping.`);
-                continue;
-            }
-
-            const resultsMap = new Map(results.map(r => [r.idEvent, r]));
-            const fixturesInGw = fixturesToScore.filter(f => f.gameweek === gw);
-
-            for (const fixture of fixturesInGw) {
-                const result = resultsMap.get(fixture.theSportsDbId);
+                // Check if the match is finished and has a score
                 if (result && result.intHomeScore != null && result.intAwayScore != null) {
                     await Fixture.updateOne(
                         { _id: fixture._id },
@@ -141,17 +134,20 @@ const runScoringProcess = async () => {
                             'actualScore.away': parseInt(result.intAwayScore)
                         }}
                     );
-                    totalScoredFixtures++;
+                    scoredFixturesCount++;
                     console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${result.intHomeScore}-${result.intAwayScore}`);
                 }
+            } catch (e) {
+                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
 
-        if (totalScoredFixtures === 0) {
+        if (scoredFixturesCount === 0) {
             console.log('No finished matches found with results on the API yet.');
             return { success: true, message: 'No results to score yet.' };
         }
 
+        // 3. Recalculate all user scores from scratch to ensure accuracy.
         console.log(`Recalculating scores for all users...`);
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
@@ -168,8 +164,8 @@ const runScoringProcess = async () => {
             await User.updateOne({ _id: user._id }, { $set: { score: totalScore } });
         }
 
-        console.log(`Scoring complete. ${totalScoredFixtures} new fixtures scored. All user scores recalculated.`);
-        return { success: true, message: `${totalScoredFixtures} fixtures scored successfully.` };
+        console.log(`Scoring complete. ${scoredFixturesCount} new fixtures scored. All user scores recalculated.`);
+        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
@@ -286,6 +282,8 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
     }
 });
+
+// CORRECTED PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
     const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
@@ -294,27 +292,25 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        // A more robust way to handle updates and deletions
-        const updatedPredictions = user.predictions.filter(p => !predictions[p.fixtureId.toString()]); // Keep predictions not in the submission
+        const existingPredictionsMap = new Map(user.predictions.map(p => [p.fixtureId.toString(), p]));
 
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            if (predictionData.homeScore !== '' && predictionData.awayScore !== '') {
-                const newPrediction = {
+            const homeScore = predictionData.homeScore;
+            const awayScore = predictionData.awayScore;
+
+            if (homeScore === '' || awayScore === '' || homeScore === null || awayScore === null) {
+                existingPredictionsMap.delete(fixtureId);
+            } else {
+                existingPredictionsMap.set(fixtureId, {
                     fixtureId,
-                    homeScore: parseInt(predictionData.homeScore),
-                    awayScore: parseInt(predictionData.awayScore)
-                };
-                const existingIndex = updatedPredictions.findIndex(p => p.fixtureId.toString() === fixtureId);
-                if (existingIndex > -1) {
-                    updatedPredictions[existingIndex] = newPrediction;
-                } else {
-                    updatedPredictions.push(newPrediction);
-                }
+                    homeScore: parseInt(homeScore),
+                    awayScore: parseInt(awayScore)
+                });
             }
         }
         
-        user.predictions = updatedPredictions;
+        user.predictions = Array.from(existingPredictionsMap.values());
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
@@ -327,6 +323,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving predictions.' });
     }
 });
+
 
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
@@ -370,18 +367,17 @@ const seedFixturesFromAPI = async () => {
         console.log(`Found ${events.length} new fixtures for Gameweek ${gameweekToFetch}.`);
 
         const fixturesToSave = await Promise.all(events.map(async (event) => {
-            let homeLogo = '', awayLogo = '';
-            // Generate a fallback logo URL immediately
             const placeholderHomeLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strHomeTeam.substring(0,3).toUpperCase()}`;
             const placeholderAwayLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strAwayTeam.substring(0,3).toUpperCase()}`;
-
+            let homeLogo = placeholderHomeLogo;
+            let awayLogo = placeholderAwayLogo;
+            
             try {
                 const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
                 if (homeTeamDetails.data.teams && homeTeamDetails.data.teams[0].strTeamBadge) {
                     homeLogo = homeTeamDetails.data.teams[0].strTeamBadge;
                 }
             } catch (e) { 
-                homeLogo = placeholderHomeLogo;
                 console.error(`Could not fetch home logo for ${event.strHomeTeam}`);
             }
 
@@ -391,7 +387,6 @@ const seedFixturesFromAPI = async () => {
                     awayLogo = awayTeamDetails.data.teams[0].strTeamBadge;
                 }
             } catch (e) { 
-                awayLogo = placeholderAwayLogo;
                 console.error(`Could not fetch away logo for ${event.strAwayTeam}`);
             }
 
@@ -438,3 +433,4 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
