@@ -117,15 +117,17 @@ const runScoringProcess = async () => {
                 const resultsResponse = await axios.get(resultsUrl);
                 const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
-                // Check if the match is finished and has a score
                 if (result && result.strStatus === "Match Finished" && result.intHomeScore != null && result.intAwayScore != null) {
-                    fixture.actualScore = {
-                        home: parseInt(result.intHomeScore),
-                        away: parseInt(result.intAwayScore)
-                    };
-                    await fixture.save();
+                    // Use a direct update command to avoid validation issues on the whole document
+                    await Fixture.updateOne(
+                        { _id: fixture._id },
+                        { $set: { 
+                            'actualScore.home': parseInt(result.intHomeScore),
+                            'actualScore.away': parseInt(result.intAwayScore)
+                        }}
+                    );
                     scoredFixturesCount++;
-                    console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${fixture.actualScore.home}-${fixture.actualScore.away}`);
+                    console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${result.intHomeScore}-${result.intAwayScore}`);
                 }
             } catch (e) {
                 console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
@@ -405,3 +407,4 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
