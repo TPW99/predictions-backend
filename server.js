@@ -9,7 +9,6 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const cron = require('node-cron');
-const { URLSearchParams } = require('url');
 
 // --- Create the Express App ---
 const app = express();
@@ -65,7 +64,7 @@ const UserSchema = new mongoose.Schema({
 });
 
 const FixtureSchema = new mongoose.Schema({
-    fplId: { type: Number, required: true, unique: true }, // FPL's unique ID for the match
+    theSportsDbId: { type: String, required: true, unique: true },
     gameweek: { type: Number, required: true },
     homeTeam: { type: String, required: true },
     awayTeam: { type: String, required: true },
@@ -90,60 +89,13 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- FPL Authentication & Data Fetching ---
-const getFPLData = async () => {
-    const session = axios.create({
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' },
-        withCredentials: true // Important for handling cookies
-    });
-
-    const loginUrl = 'https://users.premierleague.com/accounts/login/';
-    
-    console.log('--- Step 1: Visiting login page to get CSRF token... ---');
-    const initialResponse = await session.get(loginUrl);
-    
-    const csrfCookie = initialResponse.headers['set-cookie'].find(cookie => cookie.startsWith('csrftoken='));
-    if (!csrfCookie) throw new Error('Could not find CSRF token cookie.');
-    const csrfToken = csrfCookie.split(';')[0].split('=')[1];
-    console.log('--- Step 1 Success: Got CSRF token. ---');
-
-    const loginPayload = new URLSearchParams({
-        'csrfmiddlewaretoken': csrfToken,
-        'login': process.env.FPL_EMAIL,
-        'password': process.env.FPL_PASSWORD,
-        'redirect_uri': 'https://fantasy.premierleague.com/',
-        'app': 'plfpl-web'
-    });
-    
-    console.log('--- Step 2: Attempting to log in to FPL with CSRF token... ---');
-    await session.post(loginUrl, loginPayload.toString(), {
-        headers: {
-            'Referer': loginUrl,
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-    });
-    console.log('--- Step 2 Success: FPL login successful. ---');
-    
-    console.log('--- Step 3: Fetching bootstrap and fixture data... ---');
-    const bootstrapUrl = 'https://fantasy.premierleague.com/api/bootstrap-static/';
-    const fixturesUrl = 'https://fantasy.premierleague.com/api/fixtures/';
-
-    const [bootstrapRes, fixturesRes] = await Promise.all([
-        session.get(bootstrapUrl),
-        session.get(fixturesUrl)
-    ]);
-    console.log('--- Step 3 Success: All FPL data fetched. ---');
-
-    return { teams: bootstrapRes.data.teams, fplFixtures: fixturesRes.data };
-};
-
-
-// --- Reusable Scoring Logic ---
+// --- Reusable Scoring Logic (More Robust Version) ---
 const runScoringProcess = async () => {
     console.log('Running scoring process...');
     try {
-        const { fplFixtures } = await getFPLData();
-        
+        const apiKey = process.env.THESPORTSDB_API_KEY;
+        if (!apiKey) return { success: false, message: 'API key not found.' };
+
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -153,54 +105,69 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
+        console.log(`Found ${fixturesToScore.length} fixtures to score.`);
 
         let scoredFixturesCount = 0;
         const updatedFixturesForScoring = [];
 
         for (const fixture of fixturesToScore) {
-            const fplFixture = fplFixtures.find(f => f.id === fixture.fplId);
-            if (fplFixture && fplFixture.finished === true) {
-                fixture.actualScore = {
-                    home: fplFixture.team_h_score,
-                    away: fplFixture.team_a_score
-                };
-                await fixture.save();
-                updatedFixturesForScoring.push(fixture);
-                scoredFixturesCount++;
+            try {
+                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
+                const resultsResponse = await axios.get(resultsUrl);
+                const result = resultsResponse.data.events && resultsResponse.data.events[0];
+
+                if (result && result.intHomeScore != null && result.intAwayScore != null) {
+                    fixture.actualScore = {
+                        home: parseInt(result.intHomeScore),
+                        away: parseInt(result.intAwayScore)
+                    };
+                    await fixture.save();
+                    updatedFixturesForScoring.push(fixture);
+                    scoredFixturesCount++;
+                }
+            } catch (e) {
+                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
-        
+
         if (scoredFixturesCount === 0) {
+            console.log('No matching results found for fixtures needing scores.');
             return { success: true, message: 'No results to score yet.' };
         }
+
+        console.log(`Updated ${scoredFixturesCount} fixtures with actual scores. Now calculating user points...`);
         
         const fixturesMap = new Map(updatedFixturesForScoring.map(f => [f._id.toString(), f]));
         const allUsers = await User.find({});
 
         for (const user of allUsers) {
-            let userGameweekScore = 0;
-            user.predictions.forEach(p => {
-                const fixture = fixturesMap.get(p.fixtureId.toString());
-                if (fixture) {
-                    let points = calculatePoints(p, fixture.actualScore);
+            let totalScore = 0; // Recalculate total score from scratch
+            
+            for (const prediction of user.predictions) {
+                 const fixture = await Fixture.findById(prediction.fixtureId);
+                 if (fixture && fixture.actualScore.home !== null) {
+                    let points = calculatePoints(prediction, fixture.actualScore);
                     if (fixture.isDerby) points *= 2;
                     if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
-                    userGameweekScore += points;
-                }
-            });
-            if (userGameweekScore > 0) user.score += userGameweekScore;
+                    totalScore += points;
+                 }
+            }
+            user.score = totalScore;
             await user.save();
         }
+
+        console.log(`Scoring complete. ${scoredFixturesCount} fixtures and ${allUsers.length} users processed.`);
         return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
 
     } catch (error) {
-        console.error('Error during scoring process:', error.message);
+        console.error('Error during scoring process:', error);
         return { success: false, message: 'An error occurred during scoring.' };
     }
 };
 
 
 // --- API Endpoints ---
+
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { name, email, password } = req.body;
@@ -216,7 +183,6 @@ app.post('/api/auth/register', async (req, res) => {
         res.status(500).json({ message: 'Server error during registration.' });
     }
 });
-
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -231,7 +197,6 @@ app.post('/api/auth/login', async (req, res) => {
         res.status(500).json({ message: 'Server error during login.' });
     }
 });
-
 app.get('/api/user/me', authenticateToken, async (req, res) => {
     try {
         const user = await User.findById(req.user.userId).select('-password');
@@ -241,24 +206,6 @@ app.get('/api/user/me', authenticateToken, async (req, res) => {
         res.status(500).json({ message: 'Error fetching user data.' });
     }
 });
-
-app.get('/api/fixtures', async (req, res) => {
-    try {
-        const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
-        let gameweekToFetch = 1;
-        if (upcomingFixture) {
-            gameweekToFetch = upcomingFixture.gameweek;
-        } else {
-            const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
-            if (lastFixture) gameweekToFetch = lastFixture.gameweek;
-        }
-        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
-        res.json({ fixtures, gameweek: gameweekToFetch });
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching fixtures' });
-    }
-});
-
 app.get('/api/fixtures/:gameweek', async (req, res) => {
     try {
         const gameweekToFetch = parseInt(req.params.gameweek);
@@ -268,8 +215,6 @@ app.get('/api/fixtures/:gameweek', async (req, res) => {
         res.status(500).json({ message: 'Error fetching fixtures' });
     }
 });
-
-
 app.get('/api/gameweeks', async (req, res) => {
     try {
         const gameweeks = await Fixture.distinct('gameweek');
@@ -278,7 +223,6 @@ app.get('/api/gameweeks', async (req, res) => {
         res.status(500).json({ message: 'Error fetching gameweeks.' });
     }
 });
-
 app.get('/api/leaderboard', async (req, res) => {
     try {
         const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
@@ -302,27 +246,28 @@ app.get('/api/predictions/:userId/:gameweek', authenticateToken, async(req, res)
         res.status(500).json({ message: 'Error fetching prediction history.' });
     }
 });
-
 app.post('/api/prophecies', authenticateToken, async (req, res) => {
-     try {
-        const { prophecies } = req.body;
-        await User.findByIdAndUpdate(req.user.userId, { $set: { prophecies: prophecies } });
+    const { prophecies } = req.body;
+    const userId = req.user.userId;
+    try {
+        await User.findByIdAndUpdate(userId, { $set: { prophecies: prophecies } });
         res.status(200).json({ success: true, message: 'Prophecies saved successfully.' });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
     }
 });
-
 app.post('/api/predictions', authenticateToken, async (req, res) => {
+    const { predictions, jokerFixtureId } = req.body;
+    const userId = req.user.userId;
+
     try {
-        const { predictions, jokerFixtureId } = req.body;
-        const user = await User.findById(req.user.userId);
+        const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            if (predictionData.homeScore === '' || predictionData.awayScore === '') continue; // Skip empty predictions
-            
+            if (predictionData.homeScore === '' || predictionData.awayScore === '') continue;
+
             const existingPredictionIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
             
             if (existingPredictionIndex > -1) {
@@ -345,7 +290,6 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
     }
 });
 
-
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
     if (result.success) {
@@ -355,69 +299,69 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
-
-// --- FPL API Seeding Logic ---
-const seedFixturesFromFPL = async () => {
+// --- TheSportsDB API Seeding Logic ---
+const seedFixturesFromAPI = async () => {
     try {
+        const apiKey = process.env.THESPORTSDB_API_KEY;
+        if (!apiKey) {
+            console.log("TheSportsDB API key not found. Skipping seeding.");
+            return;
+        }
+        
         const fixtureCount = await Fixture.countDocuments();
-        if (fixtureCount > 300) {
-            console.log('Database already contains fixtures. Skipping FPL seed.');
+        if (fixtureCount > 0) {
+            console.log('Database already contains fixtures. Skipping seed.');
             return;
         }
 
-        console.log('Fetching live fixtures from Fantasy Premier League API...');
-        const { teams, fplFixtures } = await getFPLData();
-
-        const teamsMap = new Map(teams.map(team => [team.id, team.name]));
+        console.log('Fetching live fixtures from TheSportsDB...');
+        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsnextleague.php?id=4328`; // 4328 is the Premier League ID
         
-        const fixturesToSave = fplFixtures.map(fplFixture => {
-            const homeTeamName = teamsMap.get(fplFixture.team_h);
-            const awayTeamName = teamsMap.get(fplFixture.team_a);
+        const response = await axios.get(url);
+        const events = response.data.events;
 
-            const isDerby = (homeTeamName.includes("Man") && awayTeamName.includes("Man")) || 
-                            (homeTeamName === "Arsenal" && awayTeamName === "Tottenham Hotspur") ||
-                            (homeTeamName === "Tottenham Hotspur" && awayTeamName === "Arsenal") ||
-                            (homeTeamName === "Liverpool" && awayTeamName === "Everton") ||
-                            (homeTeamName === "Everton" && awayTeamName === "Liverpool") ||
-                            (homeTeamName === "Newcastle United" && awayTeamName === "Sunderland") ||
-                            (homeTeamName === "Sunderland" && awayTeamName === "Newcastle United");
+        if (!events || events.length === 0) {
+            console.log('API returned no fixtures.');
+            return;
+        }
+
+        const fixturesToSave = await Promise.all(events.map(async (event) => {
+            // Fetch team logos
+            const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
+            const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
+
+            const homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
+            const awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
 
             return {
-                fplId: fplFixture.id,
-                gameweek: fplFixture.event,
-                homeTeam: homeTeamName,
-                awayTeam: awayTeamName,
-                kickoffTime: new Date(fplFixture.kickoff_time),
-                homeLogo: `https://resources.premierleague.com/premierleague/badges/70/t${fplFixture.team_h}.png`,
-                awayLogo: `https://resources.premierleague.com/premierleague/badges/70/t${fplFixture.team_a}.png`,
-                isDerby: isDerby,
+                theSportsDbId: event.idEvent,
+                gameweek: parseInt(event.intRound),
+                homeTeam: event.strHomeTeam,
+                awayTeam: event.strAwayTeam,
+                homeLogo: homeLogo,
+                awayLogo: awayLogo,
+                kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
+                isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
             };
-        });
-
+        }));
+        
         if (fixturesToSave.length > 0) {
             console.log(`Found ${fixturesToSave.length} fixtures. Adding to database...`);
-            await Fixture.deleteMany({});
             await Fixture.insertMany(fixturesToSave);
-            console.log('Database seeded successfully from FPL API!');
-        } else {
-            console.log('Could not find any fixtures from the FPL API.');
+            console.log('Database seeded successfully from TheSportsDB API!');
         }
 
     } catch (error) {
-        console.error('Error during FPL seeding process:', error.message);
-        if (error.response) {
-             console.error('FPL API responded with status:', error.response.status);
-        }
+        console.error('Error during API seeding process:', error.message);
     }
 };
-
 
 // --- Database Connection ---
 mongoose.connect(process.env.DATABASE_URL)
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        await seedFixturesFromFPL(); // Run seeder on startup
+        await seedFixturesFromAPI(); // Run seeder on startup
 
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
@@ -426,10 +370,12 @@ mongoose.connect(process.env.DATABASE_URL)
         cron.schedule('0 4 * * *', runScoringProcess);
         console.log('Automated scoring job scheduled to run daily at 04:00 UTC.');
         
-        cron.schedule('0 5 * * 2', seedFixturesFromFPL);
+        // Schedule to check for new fixtures weekly, in case the season schedule changes
+        cron.schedule('0 5 * * 2', seedFixturesFromAPI);
         console.log('Automated fixture seeding job scheduled to run weekly.');
     })
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
