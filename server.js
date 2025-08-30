@@ -282,6 +282,8 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
     }
 });
+
+// CORRECTED PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
     const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
@@ -290,27 +292,33 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        // A more robust way to handle updates and deletions
-        const updatedPredictions = user.predictions.filter(p => !predictions[p.fixtureId.toString()]); // Keep predictions not in the submission
-
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            if (predictionData.homeScore !== '' && predictionData.awayScore !== '') {
+            const homeScore = predictionData.homeScore;
+            const awayScore = predictionData.awayScore;
+            
+            const existingPredictionIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
+
+            // If scores are blank, remove the prediction if it exists
+            if (homeScore === '' || awayScore === '') {
+                if (existingPredictionIndex > -1) {
+                    user.predictions.splice(existingPredictionIndex, 1);
+                }
+            } else {
+                // Scores are provided, so update or add
                 const newPrediction = {
                     fixtureId,
-                    homeScore: parseInt(predictionData.homeScore),
-                    awayScore: parseInt(predictionData.awayScore)
+                    homeScore: parseInt(homeScore),
+                    awayScore: parseInt(awayScore)
                 };
-                const existingIndex = updatedPredictions.findIndex(p => p.fixtureId.toString() === fixtureId);
-                if (existingIndex > -1) {
-                    updatedPredictions[existingIndex] = newPrediction;
+                if (existingPredictionIndex > -1) {
+                    user.predictions[existingPredictionIndex] = newPrediction;
                 } else {
-                    updatedPredictions.push(newPrediction);
+                    user.predictions.push(newPrediction);
                 }
             }
         }
         
-        user.predictions = updatedPredictions;
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
@@ -323,6 +331,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving predictions.' });
     }
 });
+
 
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
@@ -430,3 +439,4 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
