@@ -137,18 +137,15 @@ const runScoringProcess = async () => {
 
         console.log(`Updated ${scoredFixturesCount} fixtures with actual scores. Now calculating user points...`);
         
-        const allUsers = await User.find({});
+        const allUsers = await User.find({}).populate('predictions.fixtureId');
 
         for (const user of allUsers) {
             let totalScore = 0;
-            const userPredictions = await Prediction.find({ userId: user._id }).populate('fixtureId');
-            
             for (const prediction of user.predictions) {
-                 const fixture = await Fixture.findById(prediction.fixtureId);
-                 if (fixture && fixture.actualScore.home !== null) {
-                    let points = calculatePoints(prediction, fixture.actualScore);
-                    if (fixture.isDerby) points *= 2;
-                    if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
+                 if (prediction.fixtureId && prediction.fixtureId.actualScore.home !== null) {
+                    let points = calculatePoints(prediction, prediction.fixtureId.actualScore);
+                    if (prediction.fixtureId.isDerby) points *= 2;
+                    if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(prediction.fixtureId._id)) points *= 2;
                     totalScore += points;
                  }
             }
@@ -318,7 +315,7 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
-// --- TheSportsDB API Seeding Logic (Additive) ---
+// --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
@@ -326,29 +323,33 @@ const seedFixturesFromAPI = async () => {
             console.log("TheSportsDB API key not found. Skipping seeding.");
             return;
         }
+        
+        // 1. Find the highest gameweek number we already have in the DB.
+        const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
+        const lastKnownGameweek = lastFixture ? lastFixture.gameweek : 0;
+        const gameweekToFetch = lastKnownGameweek + 1;
 
-        console.log('Fetching live fixtures from TheSportsDB...');
-        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsseason.php?id=4328&s=2025-2026`;
+        if (gameweekToFetch > 38) {
+            console.log("All 38 gameweeks seem to be in the database.");
+            return;
+        }
+
+        console.log(`Checking API for fixtures for Gameweek ${gameweekToFetch}...`);
+        
+        // 2. Fetch fixtures for the *next* gameweek specifically.
+        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gameweekToFetch}&s=2025-2026`;
         
         const response = await axios.get(url);
         const events = response.data.events;
 
         if (!events || events.length === 0) {
-            console.log('API returned no fixtures for the season.');
+            console.log(`API returned no fixtures for Gameweek ${gameweekToFetch}. This is normal if they haven't been announced yet.`);
             return;
         }
 
-        const existingFixtureIds = await Fixture.find().distinct('theSportsDbId');
-        const newEvents = events.filter(event => !existingFixtureIds.includes(event.idEvent));
+        console.log(`Found ${events.length} new fixtures for Gameweek ${gameweekToFetch}.`);
 
-        if (newEvents.length === 0) {
-            console.log('No new fixtures to add.');
-            return;
-        }
-
-        console.log(`Found ${newEvents.length} new fixtures to add.`);
-
-        const fixturesToSave = await Promise.all(newEvents.map(async (event) => {
+        const fixturesToSave = await Promise.all(events.map(async (event) => {
             const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
             const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
 
@@ -369,7 +370,7 @@ const seedFixturesFromAPI = async () => {
         
         if (fixturesToSave.length > 0) {
             await Fixture.insertMany(fixturesToSave);
-            console.log(`Successfully added ${fixturesToSave.length} new fixtures to the database!`);
+            console.log(`Successfully added Gameweek ${gameweekToFetch} fixtures to the database!`);
         }
 
     } catch (error) {
@@ -398,3 +399,4 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
