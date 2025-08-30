@@ -89,17 +89,43 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
+// --- FPL Authentication & Data Fetching ---
+const getFPLData = async () => {
+    const session = axios.create({
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+    });
+
+    const loginUrl = 'https://users.premierleague.com/accounts/login/';
+    const loginPayload = {
+        login: process.env.FPL_EMAIL,
+        password: process.env.FPL_PASSWORD,
+        redirect_uri: 'https://fantasy.premierleague.com/',
+        app: 'plfpl-web'
+    };
+    
+    console.log('--- Step 1: Attempting to log in to FPL... ---');
+    await session.post(loginUrl, loginPayload);
+    console.log('--- Step 1 Success: FPL login successful. ---');
+    
+    console.log('--- Step 2: Fetching bootstrap and fixture data... ---');
+    const bootstrapUrl = 'https://fantasy.premierleague.com/api/bootstrap-static/';
+    const fixturesUrl = 'https://fantasy.premierleague.com/api/fixtures/';
+
+    const [bootstrapRes, fixturesRes] = await Promise.all([
+        session.get(bootstrapUrl),
+        session.get(fixturesUrl)
+    ]);
+    console.log('--- Step 2 Success: All FPL data fetched. ---');
+
+    return { teams: bootstrapRes.data.teams, fplFixtures: fixturesRes.data };
+};
+
+
 // --- Reusable Scoring Logic ---
 const runScoringProcess = async () => {
     console.log('Running scoring process...');
     try {
-        const url = 'https://fantasy.premierleague.com/api/fixtures/';
-        const { data: fplFixtures } = await axios.get(url, {
-             headers: { 
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Referer': 'https://fantasy.premierleague.com/fixtures'
-            }
-        });
+        const { fplFixtures } = await getFPLData();
         
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
@@ -110,7 +136,6 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
-        console.log(`Found ${fixturesToScore.length} fixtures to score.`);
 
         let scoredFixturesCount = 0;
         const updatedFixturesForScoring = [];
@@ -129,7 +154,6 @@ const runScoringProcess = async () => {
         }
         
         if (scoredFixturesCount === 0) {
-            console.log('No matching results found for fixtures needing scores.');
             return { success: true, message: 'No results to score yet.' };
         }
         
@@ -138,24 +162,18 @@ const runScoringProcess = async () => {
 
         for (const user of allUsers) {
             let userGameweekScore = 0;
-            
-            for (const prediction of user.predictions) {
-                const fixture = fixturesMap.get(prediction.fixtureId.toString());
+            user.predictions.forEach(p => {
+                const fixture = fixturesMap.get(p.fixtureId.toString());
                 if (fixture) {
-                    let points = calculatePoints(prediction, fixture.actualScore);
+                    let points = calculatePoints(p, fixture.actualScore);
                     if (fixture.isDerby) points *= 2;
                     if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
                     userGameweekScore += points;
                 }
-            }
-            
-            if (userGameweekScore > 0) {
-                user.score += userGameweekScore;
-                await user.save();
-            }
+            });
+            if (userGameweekScore > 0) user.score += userGameweekScore;
+            await user.save();
         }
-
-        console.log(`Scoring complete. ${scoredFixturesCount} fixtures and ${allUsers.length} users processed.`);
         return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
 
     } catch (error) {
@@ -286,6 +304,8 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
 
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
+            if (predictionData.homeScore === '' || predictionData.awayScore === '') continue; // Skip empty predictions
+            
             const existingPredictionIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
             
             if (existingPredictionIndex > -1) {
@@ -323,30 +343,13 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
 const seedFixturesFromFPL = async () => {
     try {
         const fixtureCount = await Fixture.countDocuments();
-        if (fixtureCount > 300) { // Check if we likely have a full season
+        if (fixtureCount > 300) {
             console.log('Database already contains fixtures. Skipping FPL seed.');
             return;
         }
 
         console.log('Fetching live fixtures from Fantasy Premier League API...');
-        const bootstrapUrl = 'https://fantasy.premierleague.com/api/bootstrap-static/';
-        const fixturesUrl = 'https://fantasy.premierleague.com/api/fixtures/';
-        
-        const headers = { 
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://fantasy.premierleague.com/fixtures'
-        };
-
-        console.log('--- Step 1: Fetching bootstrap data... ---');
-        const bootstrapRes = await axios.get(bootstrapUrl, { headers });
-        console.log('--- Step 1 Success: Bootstrap data fetched. ---');
-        
-        console.log('--- Step 2: Fetching fixtures data... ---');
-        const fixturesRes = await axios.get(fixturesUrl, { headers });
-        console.log('--- Step 2 Success: Fixtures data fetched. ---');
-
-        const teams = bootstrapRes.data.teams;
-        const fplFixtures = fixturesRes.data;
+        const { teams, fplFixtures } = await getFPLData();
 
         const teamsMap = new Map(teams.map(team => [team.id, team.name]));
         
@@ -356,7 +359,11 @@ const seedFixturesFromFPL = async () => {
 
             const isDerby = (homeTeamName.includes("Man") && awayTeamName.includes("Man")) || 
                             (homeTeamName === "Arsenal" && awayTeamName === "Tottenham Hotspur") ||
-                            (homeTeamName === "Tottenham Hotspur" && awayTeamName === "Arsenal");
+                            (homeTeamName === "Tottenham Hotspur" && awayTeamName === "Arsenal") ||
+                            (homeTeamName === "Liverpool" && awayTeamName === "Everton") ||
+                            (homeTeamName === "Everton" && awayTeamName === "Liverpool") ||
+                            (homeTeamName === "Newcastle United" && awayTeamName === "Sunderland") ||
+                            (homeTeamName === "Sunderland" && awayTeamName === "Newcastle United");
 
             return {
                 fplId: fplFixture.id,
@@ -383,7 +390,6 @@ const seedFixturesFromFPL = async () => {
         console.error('Error during FPL seeding process:', error.message);
         if (error.response) {
              console.error('FPL API responded with status:', error.response.status);
-             console.error('FPL API response data:', error.response.data);
         }
     }
 };
