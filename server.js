@@ -126,7 +126,7 @@ const runScoringProcess = async () => {
                 const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
                 // Check if the match is finished and has a score
-                if (result && result.strStatus === "Match Finished" && result.intHomeScore != null && result.intAwayScore != null) {
+                if (result && result.intHomeScore != null && result.intAwayScore != null) {
                     await Fixture.updateOne(
                         { _id: fixture._id },
                         { $set: { 
