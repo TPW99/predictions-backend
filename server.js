@@ -96,7 +96,6 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        // 1. Find all fixtures that have started but have not yet been scored.
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -110,7 +109,6 @@ const runScoringProcess = async () => {
 
         let scoredFixturesCount = 0;
         
-        // 2. Fetch the result for each fixture individually for maximum reliability.
         for (const fixture of fixturesToScore) {
             try {
                 const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
@@ -118,7 +116,6 @@ const runScoringProcess = async () => {
                 const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
                 if (result && result.strStatus === "Match Finished" && result.intHomeScore != null && result.intAwayScore != null) {
-                    // Use a direct update command to avoid validation issues on the whole document
                     await Fixture.updateOne(
                         { _id: fixture._id },
                         { $set: { 
@@ -139,7 +136,6 @@ const runScoringProcess = async () => {
             return { success: true, message: 'No results to score yet.' };
         }
 
-        // 3. Recalculate all user scores from scratch to ensure accuracy.
         console.log(`Recalculating scores for all users...`);
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
@@ -153,8 +149,8 @@ const runScoringProcess = async () => {
                     totalScore += points;
                  }
             }
-            user.score = totalScore;
-            await user.save();
+            // Use a direct update to only change the score, avoiding validation on other parts of the document.
+            await User.updateOne({ _id: user._id }, { $set: { score: totalScore } });
         }
 
         console.log(`Scoring complete. ${scoredFixturesCount} new fixtures scored. All user scores recalculated.`);
@@ -327,7 +323,6 @@ const seedFixturesFromAPI = async () => {
             return;
         }
         
-        // 1. Find the highest gameweek number we already have in the DB.
         const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
         const lastKnownGameweek = lastFixture ? lastFixture.gameweek : 0;
         const gameweekToFetch = lastKnownGameweek + 1;
@@ -339,7 +334,6 @@ const seedFixturesFromAPI = async () => {
 
         console.log(`Checking API for fixtures for Gameweek ${gameweekToFetch}...`);
         
-        // 2. Fetch fixtures for the *next* gameweek specifically.
         const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gameweekToFetch}&s=2025-2026`;
         
         const response = await axios.get(url);
@@ -407,4 +401,3 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
