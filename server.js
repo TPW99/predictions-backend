@@ -84,8 +84,16 @@ const Fixture = mongoose.model('Fixture', FixtureSchema);
 
 // --- Helper Function for Scoring ---
 const calculatePoints = (prediction, actualScore) => {
-    if (prediction.homeScore === actualScore.home && prediction.awayScore === actualScore.away) return 3;
-    if (Math.sign(prediction.homeScore - prediction.awayScore) === Math.sign(actualScore.home - actualScore.away)) return 1;
+    // Ensure prediction scores are numbers before comparing
+    const predHome = Number(prediction.homeScore);
+    const predAway = Number(prediction.awayScore);
+
+    if (isNaN(predHome) || isNaN(predAway)) {
+        return 0;
+    }
+
+    if (predHome === actualScore.home && predAway === actualScore.away) return 3;
+    if (Math.sign(predHome - predAway) === Math.sign(actualScore.home - actualScore.away)) return 1;
     return 0;
 };
 
@@ -404,4 +412,3 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
