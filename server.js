@@ -302,11 +302,12 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
             if (homeScore === '' || awayScore === '' || homeScore === null || awayScore === null) {
                 existingPredictionsMap.delete(fixtureId);
             } else {
-                existingPredictionsMap.set(fixtureId, {
+                const newPrediction = {
                     fixtureId,
                     homeScore: parseInt(homeScore),
                     awayScore: parseInt(awayScore)
-                });
+                };
+                 existingPredictionsMap.set(fixtureId, newPrediction);
             }
         }
         
@@ -433,4 +434,3 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
