@@ -115,7 +115,8 @@ const runScoringProcess = async () => {
                 const resultsResponse = await axios.get(resultsUrl);
                 const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
-                if (result && result.strStatus === "Match Finished" && result.intHomeScore != null && result.intAwayScore != null) {
+                // More flexible check: as long as the scores are not null, we can score it.
+                if (result && result.intHomeScore != null && result.intAwayScore != null) {
                     await Fixture.updateOne(
                         { _id: fixture._id },
                         { $set: { 
@@ -149,7 +150,6 @@ const runScoringProcess = async () => {
                     totalScore += points;
                  }
             }
-            // Use a direct update to only change the score, avoiding validation on other parts of the document.
             await User.updateOne({ _id: user._id }, { $set: { score: totalScore } });
         }
 
