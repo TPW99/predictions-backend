@@ -1,3 +1,4 @@
+
 // --- THIS MUST BE THE VERY FIRST LINE ---
 require('dotenv').config(); // This loads the .env file variables
 
@@ -84,7 +85,6 @@ const Fixture = mongoose.model('Fixture', FixtureSchema);
 
 // --- Helper Function for Scoring ---
 const calculatePoints = (prediction, actualScore) => {
-    // Ensure prediction scores are numbers before comparing
     const predHome = Number(prediction.homeScore);
     const predAway = Number(prediction.awayScore);
 
@@ -97,14 +97,13 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- Reusable Scoring Logic (FINAL ROBUST VERSION) ---
+// --- Reusable Scoring Logic ---
 const runScoringProcess = async () => {
     console.log('Running robust scoring process...');
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        // 1. Find all fixtures that have started but have not yet been scored.
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -118,7 +117,6 @@ const runScoringProcess = async () => {
 
         let scoredFixturesCount = 0;
         
-        // 2. Fetch the result for each fixture individually for maximum reliability.
         for (const fixture of fixturesToScore) {
             try {
                 const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
@@ -146,7 +144,6 @@ const runScoringProcess = async () => {
             return { success: true, message: 'No results to score yet.' };
         }
 
-        // 3. Recalculate all user scores from scratch to ensure accuracy.
         console.log(`Recalculating scores for all users...`);
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
@@ -281,8 +278,6 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
     }
 });
-
-// CORRECTED PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
     const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
@@ -291,37 +286,33 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        const updatedPredictions = [...user.predictions];
-
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
             const homeScore = predictionData.homeScore;
             const awayScore = predictionData.awayScore;
             
-            const existingPredictionIndex = updatedPredictions.findIndex(p => p.fixtureId.toString() === fixtureId);
+            const existingPredictionIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
 
             // If scores are blank, remove the prediction if it exists
             if (homeScore === '' || awayScore === '') {
                 if (existingPredictionIndex > -1) {
-                    updatedPredictions.splice(existingPredictionIndex, 1);
+                    user.predictions.splice(existingPredictionIndex, 1);
                 }
-                continue; // Skip to next fixture
-            }
-
-            const newPrediction = {
-                fixtureId,
-                homeScore: parseInt(homeScore),
-                awayScore: parseInt(awayScore)
-            };
-
-            if (existingPredictionIndex > -1) {
-                updatedPredictions[existingPredictionIndex] = newPrediction;
             } else {
-                updatedPredictions.push(newPrediction);
+                // Scores are provided, so update or add
+                const newPrediction = {
+                    fixtureId,
+                    homeScore: parseInt(homeScore),
+                    awayScore: parseInt(awayScore)
+                };
+                if (existingPredictionIndex > -1) {
+                    user.predictions[existingPredictionIndex] = newPrediction;
+                } else {
+                    user.predictions.push(newPrediction);
+                }
             }
         }
         
-        user.predictions = updatedPredictions;
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
@@ -380,13 +371,19 @@ const seedFixturesFromAPI = async () => {
             let homeLogo = '', awayLogo = '';
             try {
                 const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
-                homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
-            } catch (e) { console.error(`Could not fetch home logo for ${event.strHomeTeam}`)}
+                homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || `https://placehold.co/96x96/eee/ccc?text=${event.strHomeTeam.substring(0,3).toUpperCase()}`;
+            } catch (e) { 
+                homeLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strHomeTeam.substring(0,3).toUpperCase()}`;
+                console.error(`Could not fetch home logo for ${event.strHomeTeam}`);
+            }
 
             try {
                 const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
-                awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
-            } catch (e) { console.error(`Could not fetch away logo for ${event.strAwayTeam}`)}
+                awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || `https://placehold.co/96x96/eee/ccc?text=${event.strAwayTeam.substring(0,3).toUpperCase()}`;
+            } catch (e) { 
+                awayLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strAwayTeam.substring(0,3).toUpperCase()}`;
+                console.error(`Could not fetch away logo for ${event.strAwayTeam}`);
+            }
 
             return {
                 theSportsDbId: event.idEvent,
@@ -431,4 +428,3 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
