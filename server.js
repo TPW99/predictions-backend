@@ -106,7 +106,7 @@ const runScoringProcess = async () => {
             return { success: true, message: 'No new fixtures to score.' };
         }
         
-        const gameweeksToScore = [...new Set(fixturesToScore.map(f => f.gameweek))];
+        const gameweeksToScore = [...new Set(fixturesToScore.map(f => f.gameweek).filter(gw => typeof gw === 'number'))];
         console.log(`Found fixtures to score in gameweeks: ${gameweeksToScore.join(', ')}`);
 
         let totalScoredFixtures = 0;
@@ -116,7 +116,7 @@ const runScoringProcess = async () => {
             const resultsResponse = await axios.get(resultsUrl);
             const results = resultsResponse.data.events;
 
-            if (!Array.isArray(results)) { // More robust check
+            if (!Array.isArray(results)) { 
                 console.log(`No array of results for gameweek ${gw}. Skipping.`);
                 continue;
             }
