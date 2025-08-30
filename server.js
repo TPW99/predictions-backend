@@ -286,17 +286,8 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        // Filter out predictions that are left blank by the user on submission
-        const validPredictions = user.predictions.filter(p => {
-            const updatedPrediction = predictions[p.fixtureId.toString()];
-            // Keep prediction if it wasn't in the submission (wasn't editable) or if it has valid scores
-            return !updatedPrediction || (updatedPrediction.homeScore !== '' && updatedPrediction.awayScore !== '');
-        });
-        user.predictions = validPredictions;
-
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            // Only process predictions that have scores
             if (predictionData.homeScore === '' || predictionData.awayScore === '') continue;
 
             const existingPredictionIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
@@ -305,11 +296,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
                 user.predictions[existingPredictionIndex].homeScore = predictionData.homeScore;
                 user.predictions[existingPredictionIndex].awayScore = predictionData.awayScore;
             } else {
-                user.predictions.push({ 
-                    fixtureId, 
-                    homeScore: parseInt(predictionData.homeScore), 
-                    awayScore: parseInt(predictionData.awayScore) 
-                });
+                user.predictions.push({ fixtureId, homeScore: predictionData.homeScore, awayScore: predictionData.awayScore });
             }
         }
         
@@ -320,5 +307,105 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
 
         await user.save();
         res.status(200).json({ success: true, message: 'Predictions saved.' });
-    } catch (error)
+    } catch (error) {
+        console.error("Error saving predictions:", error);
+        res.status(500).json({ success: false, message: 'Error saving predictions.' });
+    }
+});
 
+app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
+    const result = await runScoringProcess();
+    if (result.success) {
+        res.status(200).json(result);
+    } else {
+        res.status(500).json(result);
+    }
+});
+
+// --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
+const seedFixturesFromAPI = async () => {
+    try {
+        const apiKey = process.env.THESPORTSDB_API_KEY;
+        if (!apiKey) {
+            console.log("TheSportsDB API key not found. Skipping seeding.");
+            return;
+        }
+        
+        const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
+        const lastKnownGameweek = lastFixture ? lastFixture.gameweek : 0;
+        const gameweekToFetch = lastKnownGameweek + 1;
+
+        if (gameweekToFetch > 38) {
+            console.log("All 38 gameweeks seem to be in the database.");
+            return;
+        }
+
+        console.log(`Checking API for fixtures for Gameweek ${gameweekToFetch}...`);
+        
+        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gameweekToFetch}&s=2025-2026`;
+        
+        const response = await axios.get(url);
+        const events = response.data.events;
+
+        if (!events || events.length === 0) {
+            console.log(`API returned no fixtures for Gameweek ${gameweekToFetch}. This is normal if they haven't been announced yet.`);
+            return;
+        }
+
+        console.log(`Found ${events.length} new fixtures for Gameweek ${gameweekToFetch}.`);
+
+        const fixturesToSave = await Promise.all(events.map(async (event) => {
+            let homeLogo = '', awayLogo = '';
+            try {
+                const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
+                homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
+            } catch (e) { console.error(`Could not fetch home logo for ${event.strHomeTeam}`)}
+
+            try {
+                const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
+                awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
+            } catch (e) { console.error(`Could not fetch away logo for ${event.strAwayTeam}`)}
+
+            return {
+                theSportsDbId: event.idEvent,
+                gameweek: parseInt(event.intRound),
+                homeTeam: event.strHomeTeam,
+                awayTeam: event.strAwayTeam,
+                homeLogo: homeLogo,
+                awayLogo: awayLogo,
+                kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
+                isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
+            };
+        }));
+        
+        if (fixturesToSave.length > 0) {
+            await Fixture.insertMany(fixturesToSave);
+            console.log(`Successfully added Gameweek ${gameweekToFetch} fixtures to the database!`);
+        }
+
+    } catch (error) {
+        console.error('Error during API seeding process:', error);
+    }
+};
+
+// --- Database Connection ---
+mongoose.connect(process.env.DATABASE_URL)
+    .then(async () => {
+        console.log('Successfully connected to MongoDB Atlas!');
+        
+        await seedFixturesFromAPI(); // Run seeder on startup
+
+        app.listen(PORT, () => {
+            console.log(`Server is running on http://localhost:${PORT}`);
+        });
+
+        cron.schedule('0 4 * * *', runScoringProcess);
+        console.log('Automated scoring job scheduled to run daily at 04:00 UTC.');
+        
+        cron.schedule('0 5 * * *', seedFixturesFromAPI); // Check for new fixtures daily
+        console.log('Automated fixture check job scheduled to run daily.');
+    })
+    .catch((error) => {
+        console.error('Error connecting to MongoDB Atlas:', error);
+        console.error(error);
+    });
