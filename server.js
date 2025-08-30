@@ -299,13 +299,16 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
             const homeScore = predictionData.homeScore;
             const awayScore = predictionData.awayScore;
 
-            if (homeScore === '' || awayScore === '' || homeScore === null || awayScore === null) {
+            const homeScoreNum = parseInt(homeScore, 10);
+            const awayScoreNum = parseInt(awayScore, 10);
+
+            if (isNaN(homeScoreNum) || isNaN(awayScoreNum)) {
                 existingPredictionsMap.delete(fixtureId);
             } else {
                 existingPredictionsMap.set(fixtureId, {
                     fixtureId,
-                    homeScore: parseInt(homeScore),
-                    awayScore: parseInt(awayScore)
+                    homeScore: homeScoreNum,
+                    awayScore: awayScoreNum
                 });
             }
         }
