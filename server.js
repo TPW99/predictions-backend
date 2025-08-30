@@ -105,17 +105,27 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
-        console.log(`Found ${fixturesToScore.length} fixtures needing scores.`);
-
-        let scoredFixturesCount = 0;
         
-        for (const fixture of fixturesToScore) {
-            try {
-                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
-                const resultsResponse = await axios.get(resultsUrl);
-                const result = resultsResponse.data.events && resultsResponse.data.events[0];
+        const gameweeksToScore = [...new Set(fixturesToScore.map(f => f.gameweek))];
+        console.log(`Found fixtures to score in gameweeks: ${gameweeksToScore.join(', ')}`);
 
-                // More flexible check: as long as the scores are not null, we can score it.
+        let totalScoredFixtures = 0;
+
+        for (const gw of gameweeksToScore) {
+            const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
+            const resultsResponse = await axios.get(resultsUrl);
+            const results = resultsResponse.data.events;
+
+            if (!results || results.length === 0) {
+                console.log(`API returned no results for Gameweek ${gw}.`);
+                continue;
+            }
+
+            const resultsMap = new Map(results.map(r => [r.idEvent, r]));
+            const fixturesInGw = fixturesToScore.filter(f => f.gameweek === gw);
+
+            for (const fixture of fixturesInGw) {
+                const result = resultsMap.get(fixture.theSportsDbId);
                 if (result && result.intHomeScore != null && result.intAwayScore != null) {
                     await Fixture.updateOne(
                         { _id: fixture._id },
@@ -124,16 +134,14 @@ const runScoringProcess = async () => {
                             'actualScore.away': parseInt(result.intAwayScore)
                         }}
                     );
-                    scoredFixturesCount++;
+                    totalScoredFixtures++;
                     console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${result.intHomeScore}-${result.intAwayScore}`);
                 }
-            } catch (e) {
-                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
 
-        if (scoredFixturesCount === 0) {
-            console.log('No finished matches found with results on the API yet.');
+        if (totalScoredFixtures === 0) {
+            console.log('No matching results found for fixtures needing scores.');
             return { success: true, message: 'No results to score yet.' };
         }
 
@@ -153,8 +161,8 @@ const runScoringProcess = async () => {
             await User.updateOne({ _id: user._id }, { $set: { score: totalScore } });
         }
 
-        console.log(`Scoring complete. ${scoredFixturesCount} new fixtures scored. All user scores recalculated.`);
-        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
+        console.log(`Scoring complete. ${totalScoredFixtures} new fixtures scored. All user scores recalculated.`);
+        return { success: true, message: `${totalScoredFixtures} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
@@ -401,3 +409,4 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
