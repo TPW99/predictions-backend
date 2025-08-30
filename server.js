@@ -116,7 +116,10 @@ const runScoringProcess = async () => {
             const resultsResponse = await axios.get(resultsUrl);
             const results = resultsResponse.data.events;
 
-            if (!results) continue;
+            if (!Array.isArray(results)) { // More robust check
+                console.log(`No array of results for gameweek ${gw}. Skipping.`);
+                continue;
+            }
 
             const resultsMap = new Map(results.map(r => [r.idEvent, r]));
             const fixturesInGw = fixturesToScore.filter(f => f.gameweek === gw);
