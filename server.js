@@ -105,37 +105,41 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
-        console.log(`Found ${fixturesToScore.length} fixtures to score.`);
+        
+        const gameweeksToScore = [...new Set(fixturesToScore.map(f => f.gameweek))];
+        console.log(`Found fixtures to score in gameweeks: ${gameweeksToScore.join(', ')}`);
 
-        let scoredFixturesCount = 0;
-        const updatedFixturesForScoring = [];
+        let totalScoredFixtures = 0;
 
-        for (const fixture of fixturesToScore) {
-            try {
-                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
-                const resultsResponse = await axios.get(resultsUrl);
-                const result = resultsResponse.data.events && resultsResponse.data.events[0];
+        for (const gw of gameweeksToScore) {
+            const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
+            const resultsResponse = await axios.get(resultsUrl);
+            const results = resultsResponse.data.events;
 
+            if (!results) continue;
+
+            const resultsMap = new Map(results.map(r => [r.idEvent, r]));
+            const fixturesInGw = fixturesToScore.filter(f => f.gameweek === gw);
+
+            for (const fixture of fixturesInGw) {
+                const result = resultsMap.get(fixture.theSportsDbId);
                 if (result && result.intHomeScore != null && result.intAwayScore != null) {
                     fixture.actualScore = {
                         home: parseInt(result.intHomeScore),
                         away: parseInt(result.intAwayScore)
                     };
                     await fixture.save();
-                    updatedFixturesForScoring.push(fixture);
-                    scoredFixturesCount++;
+                    totalScoredFixtures++;
                 }
-            } catch (e) {
-                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
 
-        if (scoredFixturesCount === 0) {
+        if (totalScoredFixtures === 0) {
             console.log('No matching results found for fixtures needing scores.');
             return { success: true, message: 'No results to score yet.' };
         }
 
-        console.log(`Updated ${scoredFixturesCount} fixtures with actual scores. Now calculating user points...`);
+        console.log(`Updated ${totalScoredFixtures} fixtures with actual scores. Now calculating user points...`);
         
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
@@ -153,8 +157,8 @@ const runScoringProcess = async () => {
             await user.save();
         }
 
-        console.log(`Scoring complete. ${scoredFixturesCount} fixtures and ${allUsers.length} users processed.`);
-        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
+        console.log(`Scoring complete. ${totalScoredFixtures} fixtures and ${allUsers.length} users processed.`);
+        return { success: true, message: `${totalScoredFixtures} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
