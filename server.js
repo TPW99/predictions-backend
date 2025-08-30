@@ -283,7 +283,7 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
     }
 });
 
-// CORRECTED PREDICTION SUBMISSION ENDPOINT
+// FINAL CORRECTED PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
     const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
@@ -302,12 +302,11 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
             if (homeScore === '' || awayScore === '' || homeScore === null || awayScore === null) {
                 existingPredictionsMap.delete(fixtureId);
             } else {
-                const newPrediction = {
+                existingPredictionsMap.set(fixtureId, {
                     fixtureId,
                     homeScore: parseInt(homeScore),
                     awayScore: parseInt(awayScore)
-                };
-                 existingPredictionsMap.set(fixtureId, newPrediction);
+                });
             }
         }
         
