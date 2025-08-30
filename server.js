@@ -112,16 +112,27 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
-        console.log(`Found ${fixturesToScore.length} fixtures needing scores.`);
-
-        let scoredFixturesCount = 0;
         
-        for (const fixture of fixturesToScore) {
-            try {
-                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
-                const resultsResponse = await axios.get(resultsUrl);
-                const result = resultsResponse.data.events && resultsResponse.data.events[0];
+        const gameweeksToScore = [...new Set(fixturesToScore.map(f => f.gameweek).filter(Boolean))];
+        console.log(`Found fixtures to score in gameweeks: ${gameweeksToScore.join(', ')}`);
 
+        let totalScoredFixtures = 0;
+
+        for (const gw of gameweeksToScore) {
+            const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
+            const resultsResponse = await axios.get(resultsUrl);
+            const results = resultsResponse.data.events;
+
+            if (!Array.isArray(results)) { 
+                console.log(`No array of results for gameweek ${gw}. Skipping.`);
+                continue;
+            }
+
+            const resultsMap = new Map(results.map(r => [r.idEvent, r]));
+            const fixturesInGw = fixturesToScore.filter(f => f.gameweek === gw);
+
+            for (const fixture of fixturesInGw) {
+                const result = resultsMap.get(fixture.theSportsDbId);
                 if (result && result.intHomeScore != null && result.intAwayScore != null) {
                     await Fixture.updateOne(
                         { _id: fixture._id },
@@ -130,15 +141,13 @@ const runScoringProcess = async () => {
                             'actualScore.away': parseInt(result.intAwayScore)
                         }}
                     );
-                    scoredFixturesCount++;
+                    totalScoredFixtures++;
                     console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${result.intHomeScore}-${result.intAwayScore}`);
                 }
-            } catch (e) {
-                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
 
-        if (scoredFixturesCount === 0) {
+        if (totalScoredFixtures === 0) {
             console.log('No finished matches found with results on the API yet.');
             return { success: true, message: 'No results to score yet.' };
         }
@@ -159,8 +168,8 @@ const runScoringProcess = async () => {
             await User.updateOne({ _id: user._id }, { $set: { score: totalScore } });
         }
 
-        console.log(`Scoring complete. ${scoredFixturesCount} new fixtures scored. All user scores recalculated.`);
-        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
+        console.log(`Scoring complete. ${totalScoredFixtures} new fixtures scored. All user scores recalculated.`);
+        return { success: true, message: `${totalScoredFixtures} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
@@ -210,7 +219,6 @@ app.get('/api/user/me', authenticateToken, async (req, res) => {
     }
 });
 
-// UPDATED: Now has two routes for fixtures
 app.get('/api/fixtures', async (req, res) => {
     try {
         const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
@@ -286,20 +294,27 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
+        // A more robust way to handle updates and deletions
+        const updatedPredictions = user.predictions.filter(p => !predictions[p.fixtureId.toString()]); // Keep predictions not in the submission
+
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            if (predictionData.homeScore === '' || predictionData.awayScore === '') continue;
-
-            const existingPredictionIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
-            
-            if (existingPredictionIndex > -1) {
-                user.predictions[existingPredictionIndex].homeScore = predictionData.homeScore;
-                user.predictions[existingPredictionIndex].awayScore = predictionData.awayScore;
-            } else {
-                user.predictions.push({ fixtureId, homeScore: predictionData.homeScore, awayScore: predictionData.awayScore });
+            if (predictionData.homeScore !== '' && predictionData.awayScore !== '') {
+                const newPrediction = {
+                    fixtureId,
+                    homeScore: parseInt(predictionData.homeScore),
+                    awayScore: parseInt(predictionData.awayScore)
+                };
+                const existingIndex = updatedPredictions.findIndex(p => p.fixtureId.toString() === fixtureId);
+                if (existingIndex > -1) {
+                    updatedPredictions[existingIndex] = newPrediction;
+                } else {
+                    updatedPredictions.push(newPrediction);
+                }
             }
         }
         
+        user.predictions = updatedPredictions;
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
@@ -322,7 +337,7 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     }
 });
 
-// --- TheSportsDB API Seeding Logic ---
+// --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
@@ -355,17 +370,18 @@ const seedFixturesFromAPI = async () => {
         console.log(`Found ${events.length} new fixtures for Gameweek ${gameweekToFetch}.`);
 
         const fixturesToSave = await Promise.all(events.map(async (event) => {
+            let homeLogo = '', awayLogo = '';
+            // Generate a fallback logo URL immediately
             const placeholderHomeLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strHomeTeam.substring(0,3).toUpperCase()}`;
             const placeholderAwayLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strAwayTeam.substring(0,3).toUpperCase()}`;
-            let homeLogo = placeholderHomeLogo;
-            let awayLogo = placeholderAwayLogo;
-            
+
             try {
                 const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
                 if (homeTeamDetails.data.teams && homeTeamDetails.data.teams[0].strTeamBadge) {
                     homeLogo = homeTeamDetails.data.teams[0].strTeamBadge;
                 }
             } catch (e) { 
+                homeLogo = placeholderHomeLogo;
                 console.error(`Could not fetch home logo for ${event.strHomeTeam}`);
             }
 
@@ -375,6 +391,7 @@ const seedFixturesFromAPI = async () => {
                     awayLogo = awayTeamDetails.data.teams[0].strTeamBadge;
                 }
             } catch (e) { 
+                awayLogo = placeholderAwayLogo;
                 console.error(`Could not fetch away logo for ${event.strAwayTeam}`);
             }
 
@@ -405,7 +422,7 @@ mongoose.connect(process.env.DATABASE_URL)
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        await seedFixturesFromAPI();
+        await seedFixturesFromAPI(); // Run seeder on startup
 
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
@@ -414,7 +431,7 @@ mongoose.connect(process.env.DATABASE_URL)
         cron.schedule('0 4 * * *', runScoringProcess);
         console.log('Automated scoring job scheduled to run daily at 04:00 UTC.');
         
-        cron.schedule('0 5 * * *', seedFixturesFromAPI);
+        cron.schedule('0 5 * * *', seedFixturesFromAPI); // Check for new fixtures daily
         console.log('Automated fixture check job scheduled to run daily.');
     })
     .catch((error) => {
