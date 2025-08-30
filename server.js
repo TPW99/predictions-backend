@@ -9,6 +9,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const cron = require('node-cron');
+const { URLSearchParams } = require('url');
 
 // --- Create the Express App ---
 const app = express();
@@ -92,22 +93,38 @@ const calculatePoints = (prediction, actualScore) => {
 // --- FPL Authentication & Data Fetching ---
 const getFPLData = async () => {
     const session = axios.create({
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' },
+        withCredentials: true // Important for handling cookies
     });
 
     const loginUrl = 'https://users.premierleague.com/accounts/login/';
-    const loginPayload = {
-        login: process.env.FPL_EMAIL,
-        password: process.env.FPL_PASSWORD,
-        redirect_uri: 'https://fantasy.premierleague.com/',
-        app: 'plfpl-web'
-    };
     
-    console.log('--- Step 1: Attempting to log in to FPL... ---');
-    await session.post(loginUrl, loginPayload);
-    console.log('--- Step 1 Success: FPL login successful. ---');
+    console.log('--- Step 1: Visiting login page to get CSRF token... ---');
+    const initialResponse = await session.get(loginUrl);
     
-    console.log('--- Step 2: Fetching bootstrap and fixture data... ---');
+    const csrfCookie = initialResponse.headers['set-cookie'].find(cookie => cookie.startsWith('csrftoken='));
+    if (!csrfCookie) throw new Error('Could not find CSRF token cookie.');
+    const csrfToken = csrfCookie.split(';')[0].split('=')[1];
+    console.log('--- Step 1 Success: Got CSRF token. ---');
+
+    const loginPayload = new URLSearchParams({
+        'csrfmiddlewaretoken': csrfToken,
+        'login': process.env.FPL_EMAIL,
+        'password': process.env.FPL_PASSWORD,
+        'redirect_uri': 'https://fantasy.premierleague.com/',
+        'app': 'plfpl-web'
+    });
+    
+    console.log('--- Step 2: Attempting to log in to FPL with CSRF token... ---');
+    await session.post(loginUrl, loginPayload.toString(), {
+        headers: {
+            'Referer': loginUrl,
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+    });
+    console.log('--- Step 2 Success: FPL login successful. ---');
+    
+    console.log('--- Step 3: Fetching bootstrap and fixture data... ---');
     const bootstrapUrl = 'https://fantasy.premierleague.com/api/bootstrap-static/';
     const fixturesUrl = 'https://fantasy.premierleague.com/api/fixtures/';
 
@@ -115,7 +132,7 @@ const getFPLData = async () => {
         session.get(bootstrapUrl),
         session.get(fixturesUrl)
     ]);
-    console.log('--- Step 2 Success: All FPL data fetched. ---');
+    console.log('--- Step 3 Success: All FPL data fetched. ---');
 
     return { teams: bootstrapRes.data.teams, fplFixtures: fixturesRes.data };
 };
