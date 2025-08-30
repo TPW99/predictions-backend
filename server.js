@@ -104,6 +104,7 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
+        // 1. Find all fixtures that have started but have not yet been scored.
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -117,6 +118,7 @@ const runScoringProcess = async () => {
 
         let scoredFixturesCount = 0;
         
+        // 2. Fetch the result for each fixture individually for maximum reliability.
         for (const fixture of fixturesToScore) {
             try {
                 const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
@@ -144,6 +146,7 @@ const runScoringProcess = async () => {
             return { success: true, message: 'No results to score yet.' };
         }
 
+        // 3. Recalculate all user scores from scratch to ensure accuracy.
         console.log(`Recalculating scores for all users...`);
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
@@ -278,6 +281,8 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
     }
 });
+
+// CORRECTED PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
     const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
@@ -286,20 +291,37 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
+        const updatedPredictions = [...user.predictions];
+
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            if (predictionData.homeScore === '' || predictionData.awayScore === '') continue;
-
-            const existingPredictionIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
+            const homeScore = predictionData.homeScore;
+            const awayScore = predictionData.awayScore;
             
+            const existingPredictionIndex = updatedPredictions.findIndex(p => p.fixtureId.toString() === fixtureId);
+
+            // If scores are blank, remove the prediction if it exists
+            if (homeScore === '' || awayScore === '') {
+                if (existingPredictionIndex > -1) {
+                    updatedPredictions.splice(existingPredictionIndex, 1);
+                }
+                continue; // Skip to next fixture
+            }
+
+            const newPrediction = {
+                fixtureId,
+                homeScore: parseInt(homeScore),
+                awayScore: parseInt(awayScore)
+            };
+
             if (existingPredictionIndex > -1) {
-                user.predictions[existingPredictionIndex].homeScore = predictionData.homeScore;
-                user.predictions[existingPredictionIndex].awayScore = predictionData.awayScore;
+                updatedPredictions[existingPredictionIndex] = newPrediction;
             } else {
-                user.predictions.push({ fixtureId, homeScore: predictionData.homeScore, awayScore: predictionData.awayScore });
+                updatedPredictions.push(newPrediction);
             }
         }
         
+        user.predictions = updatedPredictions;
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
@@ -409,3 +431,4 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
