@@ -96,6 +96,7 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
+        // 1. Find all fixtures that have started but have not yet been scored.
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -105,28 +106,19 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
+        console.log(`Found ${fixturesToScore.length} fixtures needing scores.`);
+
+        let scoredFixturesCount = 0;
         
-        const gameweeksToScore = [...new Set(fixturesToScore.map(f => f.gameweek))];
-        console.log(`Found fixtures to score in gameweeks: ${gameweeksToScore.join(', ')}`);
+        // 2. Fetch the result for each fixture individually for maximum reliability.
+        for (const fixture of fixturesToScore) {
+            try {
+                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
+                const resultsResponse = await axios.get(resultsUrl);
+                const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
-        let totalScoredFixtures = 0;
-
-        for (const gw of gameweeksToScore) {
-            const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
-            const resultsResponse = await axios.get(resultsUrl);
-            const results = resultsResponse.data.events;
-
-            if (!results || results.length === 0) {
-                console.log(`API returned no results for Gameweek ${gw}.`);
-                continue;
-            }
-
-            const resultsMap = new Map(results.map(r => [r.idEvent, r]));
-            const fixturesInGw = fixturesToScore.filter(f => f.gameweek === gw);
-
-            for (const fixture of fixturesInGw) {
-                const result = resultsMap.get(fixture.theSportsDbId);
-                if (result && result.intHomeScore != null && result.intAwayScore != null) {
+                // Check if the match is finished and has a score
+                if (result && result.strStatus === "Match Finished" && result.intHomeScore != null && result.intAwayScore != null) {
                     await Fixture.updateOne(
                         { _id: fixture._id },
                         { $set: { 
@@ -134,17 +126,20 @@ const runScoringProcess = async () => {
                             'actualScore.away': parseInt(result.intAwayScore)
                         }}
                     );
-                    totalScoredFixtures++;
+                    scoredFixturesCount++;
                     console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${result.intHomeScore}-${result.intAwayScore}`);
                 }
+            } catch (e) {
+                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
 
-        if (totalScoredFixtures === 0) {
-            console.log('No matching results found for fixtures needing scores.');
+        if (scoredFixturesCount === 0) {
+            console.log('No finished matches found with results on the API yet.');
             return { success: true, message: 'No results to score yet.' };
         }
 
+        // 3. Recalculate all user scores from scratch to ensure accuracy.
         console.log(`Recalculating scores for all users...`);
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
@@ -161,8 +156,8 @@ const runScoringProcess = async () => {
             await User.updateOne({ _id: user._id }, { $set: { score: totalScore } });
         }
 
-        console.log(`Scoring complete. ${totalScoredFixtures} new fixtures scored. All user scores recalculated.`);
-        return { success: true, message: `${totalScoredFixtures} fixtures scored successfully.` };
+        console.log(`Scoring complete. ${scoredFixturesCount} new fixtures scored. All user scores recalculated.`);
+        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
