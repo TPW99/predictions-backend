@@ -47,14 +47,7 @@ const ProphecySchema = new mongoose.Schema({
 const PredictionSchema = new mongoose.Schema({
     fixtureId: { type: mongoose.Schema.Types.ObjectId, ref: 'Fixture' },
     homeScore: { type: Number, required: true },
-    awayScore: { type: Number, required: true },
-    submittedAt: { type: Date, default: Date.now }
-});
-
-const GameweekScoreSchema = new mongoose.Schema({
-    gameweek: { type: Number, required: true },
-    points: { type: Number, default: 0 },
-    penalty: { type: Number, default: 0 }
+    awayScore: { type: Number, required: true }
 });
 
 const UserSchema = new mongoose.Schema({
@@ -64,7 +57,6 @@ const UserSchema = new mongoose.Schema({
     score: { type: Number, default: 0 },
     predictions: [PredictionSchema],
     prophecies: ProphecySchema,
-    gameweekScores: [GameweekScoreSchema],
     chips: {
         jokerUsedInSeason: { type: Boolean, default: false },
         jokerFixtureId: { type: mongoose.Schema.Types.ObjectId, ref: 'Fixture', default: null }
@@ -104,13 +96,14 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- Reusable Scoring Logic ---
+// --- Reusable Scoring Logic (FINAL ROBUST VERSION) ---
 const runScoringProcess = async () => {
     console.log('Running robust scoring process...');
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
+        // 1. Find all fixtures that have started but have not yet been scored.
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -120,8 +113,11 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
+        console.log(`Found ${fixturesToScore.length} fixtures needing scores.`);
+
+        let scoredFixturesCount = 0;
         
-        const scoredFixtures = [];
+        // 2. Fetch the result for each fixture individually for maximum reliability.
         for (const fixture of fixturesToScore) {
             try {
                 const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
@@ -129,55 +125,45 @@ const runScoringProcess = async () => {
                 const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
                 if (result && result.intHomeScore != null && result.intAwayScore != null) {
-                    fixture.actualScore = {
-                        home: parseInt(result.intHomeScore),
-                        away: parseInt(result.intAwayScore)
-                    };
-                    await fixture.save();
-                    scoredFixtures.push(fixture);
+                    await Fixture.updateOne(
+                        { _id: fixture._id },
+                        { $set: { 
+                            'actualScore.home': parseInt(result.intHomeScore),
+                            'actualScore.away': parseInt(result.intAwayScore)
+                        }}
+                    );
+                    scoredFixturesCount++;
+                    console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${result.intHomeScore}-${result.intAwayScore}`);
                 }
             } catch (e) {
                 console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
 
-        if (scoredFixtures.length === 0) {
+        if (scoredFixturesCount === 0) {
             console.log('No finished matches found with results on the API yet.');
             return { success: true, message: 'No results to score yet.' };
         }
 
-        console.log(`Recalculating scores for all users based on ${scoredFixtures.length} new results...`);
+        // 3. Recalculate all user scores from scratch to ensure accuracy.
+        console.log(`Recalculating scores for all users...`);
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
         for (const user of allUsers) {
-            const gameweekScoresMap = new Map();
-
+            let totalScore = 0;
             for (const prediction of user.predictions) {
-                const fixture = prediction.fixtureId;
-                if (fixture && fixture.actualScore && fixture.actualScore.home !== null) {
-                    const points = calculatePoints(prediction, fixture.actualScore);
-                    const gw = fixture.gameweek;
-                    
-                    const currentGwPoints = gameweekScoresMap.get(gw) || 0;
-                    gameweekScoresMap.set(gw, currentGwPoints + points);
-                }
+                 if (prediction.fixtureId && prediction.fixtureId.actualScore && prediction.fixtureId.actualScore.home !== null) {
+                    let points = calculatePoints(prediction, prediction.fixtureId.actualScore);
+                    if (prediction.fixtureId.isDerby) points *= 2;
+                    if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(prediction.fixtureId._id)) points *= 2;
+                    totalScore += points;
+                 }
             }
-            
-            const existingGameweekScores = new Map(user.gameweekScores.map(gs => [gs.gameweek, gs]));
-            
-            for (const [gameweek, points] of gameweekScoresMap.entries()) {
-                 const existing = existingGameweekScores.get(gameweek) || { gameweek, points: 0, penalty: 0 };
-                 existing.points = points;
-                 existingGameweekScores.set(gameweek, existing);
-            }
-            
-            user.gameweekScores = Array.from(existingGameweekScores.values());
-            user.score = user.gameweekScores.reduce((acc, curr) => acc + curr.points - curr.penalty, 0);
-            await user.save();
+            await User.updateOne({ _id: user._id }, { $set: { score: totalScore } });
         }
 
-        console.log(`Scoring complete. All user scores recalculated.`);
-        return { success: true, message: `${scoredFixtures.length} fixtures scored successfully.` };
+        console.log(`Scoring complete. ${scoredFixturesCount} new fixtures scored. All user scores recalculated.`);
+        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
@@ -203,7 +189,6 @@ app.post('/api/auth/register', async (req, res) => {
         res.status(500).json({ message: 'Server error during registration.' });
     }
 });
-
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -218,7 +203,6 @@ app.post('/api/auth/login', async (req, res) => {
         res.status(500).json({ message: 'Server error during login.' });
     }
 });
-
 app.get('/api/user/me', authenticateToken, async (req, res) => {
     try {
         const user = await User.findById(req.user.userId).select('-password');
@@ -226,16 +210,6 @@ app.get('/api/user/me', authenticateToken, async (req, res) => {
         res.json(user);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching user data.' });
-    }
-});
-
-app.get('/api/fixtures/:gameweek', async (req, res) => {
-    try {
-        const gameweekToFetch = parseInt(req.params.gameweek);
-        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
-        res.json({ fixtures, gameweek: gameweekToFetch });
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching fixtures' });
     }
 });
 
@@ -256,6 +230,15 @@ app.get('/api/fixtures', async (req, res) => {
     }
 });
 
+app.get('/api/fixtures/:gameweek', async (req, res) => {
+    try {
+        const gameweekToFetch = parseInt(req.params.gameweek);
+        const fixtures = await Fixture.find({ gameweek: gameweekToFetch }).sort({ kickoffTime: 1 });
+        res.json({ fixtures, gameweek: gameweekToFetch });
+    } catch (error) {
+        res.status(500).json({ message: 'Error fetching fixtures' });
+    }
+});
 app.get('/api/gameweeks', async (req, res) => {
     try {
         const gameweeks = await Fixture.distinct('gameweek');
@@ -264,7 +247,6 @@ app.get('/api/gameweeks', async (req, res) => {
         res.status(500).json({ message: 'Error fetching gameweeks.' });
     }
 });
-
 app.get('/api/leaderboard', async (req, res) => {
     try {
         const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
@@ -273,35 +255,26 @@ app.get('/api/leaderboard', async (req, res) => {
         res.status(500).json({ message: 'Error fetching leaderboard data.' });
     }
 });
-
 app.get('/api/predictions/:userId/:gameweek', authenticateToken, async(req, res) => {
     try {
         const { userId, gameweek } = req.params;
         const user = await User.findById(userId).populate('predictions.fixtureId');
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        const gameweekNum = parseInt(gameweek);
-
         const history = user.predictions
-            .filter(p => p.fixtureId && p.fixtureId.gameweek == gameweekNum && new Date(p.fixtureId.kickoffTime) < new Date())
+            .filter(p => p.fixtureId && p.fixtureId.gameweek == gameweek && new Date(p.fixtureId.kickoffTime) < new Date())
             .map(p => ({ fixture: p.fixtureId, prediction: { homeScore: p.homeScore, awayScore: p.awayScore } }));
         
-        const summary = user.gameweekScores.find(gs => gs.gameweek === gameweekNum);
-
-        res.json({ 
-            userName: user.name, 
-            history, 
-            summary: summary || { gameweek: gameweekNum, points: 0, penalty: 0 } 
-        });
+        res.json({ userName: user.name, history });
     } catch(error) {
         res.status(500).json({ message: 'Error fetching prediction history.' });
     }
 });
-
 app.post('/api/prophecies', authenticateToken, async (req, res) => {
     const { prophecies } = req.body;
+    const userId = req.user.userId;
     try {
-        await User.findByIdAndUpdate(req.user.userId, { $set: { prophecies: prophecies } });
+        await User.findByIdAndUpdate(userId, { $set: { prophecies: prophecies } });
         res.status(200).json({ success: true, message: 'Prophecies saved successfully.' });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
@@ -310,55 +283,32 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
 
 // FINAL CORRECTED PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
-    const { predictions, jokerFixtureId, submissionTime, deadline } = req.body;
+    const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
 
     try {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        // Penalty Logic
-        if (submissionTime && deadline && new Date(submissionTime) > new Date(deadline)) {
-            const firstFixtureId = Object.keys(predictions)[0];
-            const fixture = await Fixture.findById(firstFixtureId);
-            if (fixture) {
-                const gameweek = fixture.gameweek;
-                let gwSummary = user.gameweekScores.find(gs => gs.gameweek === gameweek);
-                if (gwSummary) {
-                    gwSummary.penalty = 3;
-                } else {
-                    user.gameweekScores.push({ gameweek, points: 0, penalty: 3 });
-                }
-            }
-        }
+        const existingPredictionsMap = new Map(user.predictions.map(p => [p.fixtureId.toString(), p]));
 
-        // Prediction Update Logic
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
             const homeScore = predictionData.homeScore;
             const awayScore = predictionData.awayScore;
-            
-            const existingIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
 
             if (homeScore === '' || awayScore === '' || homeScore === null || awayScore === null) {
-                if (existingIndex > -1) {
-                    user.predictions.splice(existingIndex, 1);
-                }
+                existingPredictionsMap.delete(fixtureId);
             } else {
-                const newPrediction = {
+                existingPredictionsMap.set(fixtureId, {
                     fixtureId,
                     homeScore: parseInt(homeScore),
-                    awayScore: parseInt(awayScore),
-                    submittedAt: new Date()
-                };
-                if (existingIndex > -1) {
-                    user.predictions[existingIndex] = newPrediction;
-                } else {
-                    user.predictions.push(newPrediction);
-                }
+                    awayScore: parseInt(awayScore)
+                });
             }
         }
         
+        user.predictions = Array.from(existingPredictionsMap.values());
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
@@ -375,41 +325,14 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
 
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
-    if(result.success) {
+    if (result.success) {
         res.status(200).json(result);
     } else {
         res.status(500).json(result);
     }
 });
 
-app.post('/api/admin/update-score', authenticateToken, async (req, res) => {
-    try {
-        const { fixtureId, homeScore, awayScore } = req.body;
-        if (fixtureId == null || homeScore == null || awayScore == null) {
-             return res.status(400).json({ message: 'Fixture ID and scores are required.' });
-        }
-        await Fixture.findByIdAndUpdate(fixtureId, { 
-            $set: { 'actualScore.home': homeScore, 'actualScore.away': awayScore } 
-        });
-        res.status(200).json({ success: true, message: 'Score updated successfully.'});
-    } catch (error) {
-        res.status(500).json({ success: false, message: 'Failed to update score.'});
-    }
-});
-
-app.get('/api/summary/:gameweek', authenticateToken, async (req, res) => {
-    try {
-        const gameweek = parseInt(req.params.gameweek);
-        const user = await User.findById(req.user.userId);
-        const summary = user.gameweekScores.find(gs => gs.gameweek === gameweek);
-        res.json(summary || { gameweek, points: 0, penalty: 0 });
-    } catch (error) {
-        res.status(500).json({ message: 'Error fetching summary.' });
-    }
-});
-
-
-// --- TheSportsDB API Seeding Logic ---
+// --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
@@ -435,7 +358,7 @@ const seedFixturesFromAPI = async () => {
         const events = response.data.events;
 
         if (!events || events.length === 0) {
-            console.log(`API returned no fixtures for Gameweek ${gameweekToFetch}.`);
+            console.log(`API returned no fixtures for Gameweek ${gameweekToFetch}. This is normal if they haven't been announced yet.`);
             return;
         }
 
@@ -452,14 +375,18 @@ const seedFixturesFromAPI = async () => {
                 if (homeTeamDetails.data.teams && homeTeamDetails.data.teams[0].strTeamBadge) {
                     homeLogo = homeTeamDetails.data.teams[0].strTeamBadge;
                 }
-            } catch (e) { console.error(`Could not fetch home logo for ${event.strHomeTeam}`); }
+            } catch (e) { 
+                console.error(`Could not fetch home logo for ${event.strHomeTeam}`);
+            }
 
             try {
                 const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
                 if (awayTeamDetails.data.teams && awayTeamDetails.data.teams[0].strTeamBadge) {
                     awayLogo = awayTeamDetails.data.teams[0].strTeamBadge;
                 }
-            } catch (e) { console.error(`Could not fetch away logo for ${event.strAwayTeam}`); }
+            } catch (e) { 
+                console.error(`Could not fetch away logo for ${event.strAwayTeam}`);
+            }
 
             return {
                 theSportsDbId: event.idEvent,
@@ -488,7 +415,8 @@ mongoose.connect(process.env.DATABASE_URL)
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        await seedFixturesFromAPI(); 
+        await seedFixturesFromAPI(); // Run seeder on startup
+
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
         });
@@ -496,7 +424,7 @@ mongoose.connect(process.env.DATABASE_URL)
         cron.schedule('0 4 * * *', runScoringProcess);
         console.log('Automated scoring job scheduled to run daily at 04:00 UTC.');
         
-        cron.schedule('0 5 * * *', seedFixturesFromAPI);
+        cron.schedule('0 5 * * *', seedFixturesFromAPI); // Check for new fixtures daily
         console.log('Automated fixture check job scheduled to run daily.');
     })
     .catch((error) => {
