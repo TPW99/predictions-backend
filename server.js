@@ -47,8 +47,7 @@ const ProphecySchema = new mongoose.Schema({
 const PredictionSchema = new mongoose.Schema({
     fixtureId: { type: mongoose.Schema.Types.ObjectId, ref: 'Fixture' },
     homeScore: { type: Number, required: true },
-    awayScore: { type: Number, required: true },
-    submittedAt: { type: Date, default: Date.now }
+    awayScore: { type: Number, required: true }
 });
 
 const GameweekScoreSchema = new mongoose.Schema({
@@ -264,22 +263,32 @@ app.get('/api/leaderboard', async (req, res) => {
         res.status(500).json({ message: 'Error fetching leaderboard data.' });
     }
 });
+
+// MODIFIED: This endpoint now returns the summary as well
 app.get('/api/predictions/:userId/:gameweek', authenticateToken, async(req, res) => {
     try {
         const { userId, gameweek } = req.params;
         const user = await User.findById(userId).populate('predictions.fixtureId');
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
+        const gameweekNum = parseInt(gameweek);
+
         const history = user.predictions
-            .filter(p => p.fixtureId && p.fixtureId.gameweek == gameweek && new Date(p.fixtureId.kickoffTime) < new Date())
+            .filter(p => p.fixtureId && p.fixtureId.gameweek == gameweekNum && new Date(p.fixtureId.kickoffTime) < new Date())
             .map(p => ({ fixture: p.fixtureId, prediction: { homeScore: p.homeScore, awayScore: p.awayScore } }));
         
-        res.json({ userName: user.name, history });
+        const summary = user.gameweekScores.find(gs => gs.gameweek === gameweekNum);
+
+        res.json({ 
+            userName: user.name, 
+            history, 
+            summary: summary || { gameweek: gameweekNum, points: 0, penalty: 0 } 
+        });
     } catch(error) {
         res.status(500).json({ message: 'Error fetching prediction history.' });
     }
 });
-app.post('/api/prophecies', authenticateToken, async (req, res) => {
+app.post('/api/prophecies', async (req, res) => {
     const { prophecies } = req.body;
     const userId = req.user.userId;
     try {
@@ -289,7 +298,7 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
     }
 });
-app.post('/api/predictions', authenticateToken, async (req, res) => {
+app.post('/api/predictions', async (req, res) => {
     const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
 
@@ -342,7 +351,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
+app.post('/api/admin/score-gameweek', async (req, res) => {
     const result = await runScoringProcess();
     if (result.success) {
         res.status(200).json(result);
@@ -350,18 +359,22 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
         res.status(500).json(result);
     }
 });
-app.get('/api/summary/:gameweek', authenticateToken, async (req, res) => {
+app.post('/api/admin/update-score', async (req, res) => {
     try {
-        const gameweek = parseInt(req.params.gameweek);
-        const user = await User.findById(req.user.userId);
-        const summary = user.gameweekScores.find(gs => gs.gameweek === gameweek);
-        res.json(summary || { gameweek, points: 0, penalty: 0 });
+        const { fixtureId, homeScore, awayScore } = req.body;
+        if (fixtureId == null || homeScore == null || awayScore == null) {
+             return res.status(400).json({ message: 'Fixture ID and scores are required.' });
+        }
+        await Fixture.findByIdAndUpdate(fixtureId, { 
+            $set: { 'actualScore.home': homeScore, 'actualScore.away': awayScore } 
+        });
+        res.status(200).json({ success: true, message: 'Score updated successfully.'});
     } catch (error) {
-        res.status(500).json({ message: 'Error fetching summary.' });
+        res.status(500).json({ success: false, message: 'Failed to update score.'});
     }
 });
 
-// --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
+// TheSportsDB API Seeding Logic
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
@@ -387,7 +400,7 @@ const seedFixturesFromAPI = async () => {
         const events = response.data.events;
 
         if (!events || events.length === 0) {
-            console.log(`API returned no fixtures for Gameweek ${gameweekToFetch}. This is normal if they haven't been announced yet.`);
+            console.log(`API returned no fixtures for Gameweek ${gameweekToFetch}.`);
             return;
         }
 
@@ -404,18 +417,14 @@ const seedFixturesFromAPI = async () => {
                 if (homeTeamDetails.data.teams && homeTeamDetails.data.teams[0].strTeamBadge) {
                     homeLogo = homeTeamDetails.data.teams[0].strTeamBadge;
                 }
-            } catch (e) { 
-                console.error(`Could not fetch home logo for ${event.strHomeTeam}`);
-            }
+            } catch (e) { console.error(`Could not fetch home logo for ${event.strHomeTeam}`); }
 
             try {
                 const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
                 if (awayTeamDetails.data.teams && awayTeamDetails.data.teams[0].strTeamBadge) {
                     awayLogo = awayTeamDetails.data.teams[0].strTeamBadge;
                 }
-            } catch (e) { 
-                console.error(`Could not fetch away logo for ${event.strAwayTeam}`);
-            }
+            } catch (e) { console.error(`Could not fetch away logo for ${event.strAwayTeam}`); }
 
             return {
                 theSportsDbId: event.idEvent,
@@ -444,8 +453,7 @@ mongoose.connect(process.env.DATABASE_URL)
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        await seedFixturesFromAPI(); // Run seeder on startup
-
+        await seedFixturesFromAPI(); 
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
         });
@@ -453,11 +461,10 @@ mongoose.connect(process.env.DATABASE_URL)
         cron.schedule('0 4 * * *', runScoringProcess);
         console.log('Automated scoring job scheduled to run daily at 04:00 UTC.');
         
-        cron.schedule('0 5 * * *', seedFixturesFromAPI); // Check for new fixtures daily
+        cron.schedule('0 5 * * *', seedFixturesFromAPI);
         console.log('Automated fixture check job scheduled to run daily.');
     })
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
-        console.error(error);
     });
 
