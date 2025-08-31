@@ -168,7 +168,7 @@ const runScoringProcess = async () => {
             
             for (const [gameweek, points] of gameweekScoresMap.entries()) {
                  const existing = existingGameweekScores.get(gameweek) || { gameweek, points: 0, penalty: 0 };
-                 existing.points = points; // Set the new calculated points
+                 existing.points = points;
                  existingGameweekScores.set(gameweek, existing);
             }
             
@@ -316,8 +316,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId).populate('predictions.fixtureId');
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        // Logic for handling late penalty
-        if (new Date(submissionTime) > new Date(deadline)) {
+        if (submissionTime && deadline && new Date(submissionTime) > new Date(deadline)) {
             const firstFixtureInSubmission = await Fixture.findById(Object.keys(predictions)[0]);
             if (firstFixtureInSubmission) {
                 const gameweek = firstFixtureInSubmission.gameweek;
@@ -330,21 +329,22 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
             }
         }
 
-        // Update predictions
+        const updatedPredictions = [...user.predictions];
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
             if (predictionData.homeScore === '' || predictionData.awayScore === '') continue;
 
-            const existingIndex = user.predictions.findIndex(p => p.fixtureId._id.toString() === fixtureId);
+            const existingIndex = updatedPredictions.findIndex(p => p.fixtureId._id.toString() === fixtureId);
             if (existingIndex > -1) {
-                user.predictions[existingIndex].homeScore = predictionData.homeScore;
-                user.predictions[existingIndex].awayScore = predictionData.awayScore;
-                user.predictions[existingIndex].submittedAt = new Date();
+                updatedPredictions[existingIndex].homeScore = predictionData.homeScore;
+                updatedPredictions[existingIndex].awayScore = predictionData.awayScore;
+                updatedPredictions[existingIndex].submittedAt = new Date();
             } else {
-                user.predictions.push({ ...predictionData, fixtureId, submittedAt: new Date() });
+                updatedPredictions.push({ ...predictionData, fixtureId, submittedAt: new Date() });
             }
         }
         
+        user.predictions = updatedPredictions;
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
@@ -360,11 +360,27 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
 
 
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
-    // ... (existing code)
+    const result = await runScoringProcess();
+    if(result.success) {
+        res.status(200).json(result);
+    } else {
+        res.status(500).json(result);
+    }
 });
 
 app.post('/api/admin/update-score', authenticateToken, async (req, res) => {
-    // ... (existing code)
+    try {
+        const { fixtureId, homeScore, awayScore } = req.body;
+        if (fixtureId == null || homeScore == null || awayScore == null) {
+             return res.status(400).json({ message: 'Fixture ID and scores are required.' });
+        }
+        await Fixture.findByIdAndUpdate(fixtureId, { 
+            $set: { 'actualScore.home': homeScore, 'actualScore.away': awayScore } 
+        });
+        res.status(200).json({ success: true, message: 'Score updated successfully.'});
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to update score.'});
+    }
 });
 
 app.get('/api/summary/:gameweek', authenticateToken, async (req, res) => {
@@ -473,4 +489,3 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
