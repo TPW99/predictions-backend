@@ -84,7 +84,6 @@ const Fixture = mongoose.model('Fixture', FixtureSchema);
 
 // --- Helper Function for Scoring ---
 const calculatePoints = (prediction, actualScore) => {
-    // Ensure prediction scores are numbers before comparing
     const predHome = Number(prediction.homeScore);
     const predAway = Number(prediction.awayScore);
 
@@ -97,14 +96,13 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- Reusable Scoring Logic (FINAL ROBUST VERSION) ---
+// --- Reusable Scoring Logic ---
 const runScoringProcess = async () => {
     console.log('Running robust scoring process...');
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        // 1. Find all fixtures that have started but have not yet been scored.
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -118,14 +116,12 @@ const runScoringProcess = async () => {
 
         let scoredFixturesCount = 0;
         
-        // 2. Fetch the result for each fixture individually for maximum reliability.
         for (const fixture of fixturesToScore) {
             try {
                 const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
                 const resultsResponse = await axios.get(resultsUrl);
                 const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
-                // Check if the match is finished and has a score
                 if (result && result.intHomeScore != null && result.intAwayScore != null) {
                     await Fixture.updateOne(
                         { _id: fixture._id },
@@ -147,7 +143,6 @@ const runScoringProcess = async () => {
             return { success: true, message: 'No results to score yet.' };
         }
 
-        // 3. Recalculate all user scores from scratch to ensure accuracy.
         console.log(`Recalculating scores for all users...`);
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
@@ -282,8 +277,6 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
     }
 });
-
-// FINAL CORRECTED PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
     const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
@@ -337,13 +330,28 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
     }
 });
 
-
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
     if (result.success) {
         res.status(200).json(result);
     } else {
         res.status(500).json(result);
+    }
+});
+
+// NEW Admin endpoint for manual score updates
+app.post('/api/admin/update-score', authenticateToken, async (req, res) => {
+    try {
+        const { fixtureId, homeScore, awayScore } = req.body;
+        if (fixtureId == null || homeScore == null || awayScore == null) {
+             return res.status(400).json({ message: 'Fixture ID and scores are required.' });
+        }
+        await Fixture.findByIdAndUpdate(fixtureId, { 
+            $set: { 'actualScore.home': homeScore, 'actualScore.away': awayScore } 
+        });
+        res.status(200).json({ success: true, message: 'Score updated successfully.'});
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Failed to update score.'});
     }
 });
 
