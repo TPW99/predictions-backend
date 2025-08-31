@@ -150,7 +150,6 @@ const runScoringProcess = async () => {
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
         for (const user of allUsers) {
-            let totalScore = 0;
             const gameweekScoresMap = new Map();
 
             for (const prediction of user.predictions) {
@@ -309,17 +308,21 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
     }
 });
 
+// FINAL CORRECTED PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
     const { predictions, jokerFixtureId, submissionTime, deadline } = req.body;
     const userId = req.user.userId;
+
     try {
-        const user = await User.findById(userId).populate('predictions.fixtureId');
+        const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
+        // Penalty Logic
         if (submissionTime && deadline && new Date(submissionTime) > new Date(deadline)) {
-            const firstFixtureInSubmission = await Fixture.findById(Object.keys(predictions)[0]);
-            if (firstFixtureInSubmission) {
-                const gameweek = firstFixtureInSubmission.gameweek;
+            const firstFixtureId = Object.keys(predictions)[0];
+            const fixture = await Fixture.findById(firstFixtureId);
+            if (fixture) {
+                const gameweek = fixture.gameweek;
                 let gwSummary = user.gameweekScores.find(gs => gs.gameweek === gameweek);
                 if (gwSummary) {
                     gwSummary.penalty = 3;
@@ -329,22 +332,33 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
             }
         }
 
-        const updatedPredictions = [...user.predictions];
+        // Prediction Update Logic
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            if (predictionData.homeScore === '' || predictionData.awayScore === '') continue;
+            const homeScore = predictionData.homeScore;
+            const awayScore = predictionData.awayScore;
+            
+            const existingIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
 
-            const existingIndex = updatedPredictions.findIndex(p => p.fixtureId._id.toString() === fixtureId);
-            if (existingIndex > -1) {
-                updatedPredictions[existingIndex].homeScore = predictionData.homeScore;
-                updatedPredictions[existingIndex].awayScore = predictionData.awayScore;
-                updatedPredictions[existingIndex].submittedAt = new Date();
+            if (homeScore === '' || awayScore === '' || homeScore === null || awayScore === null) {
+                if (existingIndex > -1) {
+                    user.predictions.splice(existingIndex, 1);
+                }
             } else {
-                updatedPredictions.push({ ...predictionData, fixtureId, submittedAt: new Date() });
+                const newPrediction = {
+                    fixtureId,
+                    homeScore: parseInt(homeScore),
+                    awayScore: parseInt(awayScore),
+                    submittedAt: new Date()
+                };
+                if (existingIndex > -1) {
+                    user.predictions[existingIndex] = newPrediction;
+                } else {
+                    user.predictions.push(newPrediction);
+                }
             }
         }
         
-        user.predictions = updatedPredictions;
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
