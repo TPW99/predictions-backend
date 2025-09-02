@@ -82,28 +82,54 @@ const FixtureSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 const Fixture = mongoose.model('Fixture', FixtureSchema);
 
+// --- NEW: Permanent Team Logo Mapping ---
+const teamLogos = {
+    "Arsenal": "https://ssl.gstatic.com/onebox/media/sports/logos/4us2nCgl6kgZc0t3hpW75Q_96x96.png",
+    "Aston Villa": "https://ssl.gstatic.com/onebox/media/sports/logos/N6-HDdY7In-fm-Y6LIADsA_96x96.png",
+    "Bournemouth": "https://ssl.gstatic.com/onebox/media/sports/logos/4ltl6D-3jH2x_o0l4q1e_g_96x96.png",
+    "Brentford": "https://ssl.gstatic.com/onebox/media/sports/logos/QOUce0o249-fYvS6T2K_cQ_96x96.png",
+    "Brighton": "https://ssl.gstatic.com/onebox/media/sports/logos/EKIe0e-ZIphOcfYwWr-4cg_96x96.png",
+    "Burnley": "https://ssl.gstatic.com/onebox/media/sports/logos/teLLOL2zEXINSAcV1Lw40g_96x96.png",
+    "Chelsea": "https://ssl.gstatic.com/onebox/media/sports/logos/fhBITrIlbQxhVB60sqHmRw_96x96.png",
+    "Crystal Palace": "https://ssl.gstatic.com/onebox/media/sports/logos/6Al17eKthA2qZf-49536gA_96x96.png",
+    "Everton": "https://ssl.gstatic.com/onebox/media/sports/logos/C3J4B9sbvGy3i42J4x_jow_96x96.png",
+    "Fulham": "https://ssl.gstatic.com/onebox/media/sports/logos/8_a_fBC_UMkl_M2A_4_tKGg_96x96.png",
+    "Leeds United": "https://ssl.gstatic.com/onebox/media/sports/logos/5dqf3k2-N9n982-4aCRaYQ_96x96.png",
+    "Liverpool": "https://ssl.gstatic.com/onebox/media/sports/logos/0iZm6OOF1g_M51M4e_Q69A_96x96.png",
+    "Man City": "https://ssl.gstatic.com/onebox/media/sports/logos/z44l-a0W1v5FmgP1e2SinQ_96x96.png",
+    "Man Utd": "https://ssl.gstatic.com/onebox/media/sports/logos/z44l-a0W1v5FmgP1e2SinQ_96x96.png",
+    "Newcastle": "https://ssl.gstatic.com/onebox/media/sports/logos/96_A_j_1UcH1sNA_JpQ22A_96x96.png",
+    "Nottingham Forest": "https://ssl.gstatic.com/onebox/media/sports/logos/l3qf-XJ23wR1iMdlm20L8g_96x96.png",
+    "Sunderland": "https://ssl.gstatic.com/onebox/media/sports/logos/SU5-2i_B2iJp12r9322y-g_96x96.png",
+    "Tottenham": "https://ssl.gstatic.com/onebox/media/sports/logos/k3Q_m6eVK0h_Hj6nPoW_9g_96x96.png",
+    "West Ham": "https://ssl.gstatic.com/onebox/media/sports/logos/bXyitHBcDm+VwKGHbj9Gag_96x96.png",
+    "Wolves": "https://ssl.gstatic.com/onebox/media/sports/logos/ZW73-D_KTZfFOE6C2oSw_g_96x96.png"
+};
+
+// Helper to find logo URL
+const getLogoUrl = (teamName) => {
+    const key = Object.keys(teamLogos).find(k => teamName.includes(k));
+    return key ? teamLogos[key] : `https://placehold.co/96x96/eee/ccc?text=${teamName.substring(0,3).toUpperCase()}`;
+};
+
 // --- Helper Function for Scoring ---
 const calculatePoints = (prediction, actualScore) => {
     const predHome = Number(prediction.homeScore);
     const predAway = Number(prediction.awayScore);
 
-    if (isNaN(predHome) || isNaN(predAway)) {
-        return 0;
-    }
-
+    if (isNaN(predHome) || isNaN(predAway)) return 0;
     if (predHome === actualScore.home && predAway === actualScore.away) return 3;
     if (Math.sign(predHome - predAway) === Math.sign(actualScore.home - actualScore.away)) return 1;
     return 0;
 };
 
-// --- Reusable Scoring Logic (FINAL ROBUST VERSION) ---
+// --- Reusable Scoring Logic ---
 const runScoringProcess = async () => {
     console.log('Running robust scoring process...');
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        // 1. Find all fixtures that have started but have not yet been scored.
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -117,7 +143,6 @@ const runScoringProcess = async () => {
 
         let scoredFixturesCount = 0;
         
-        // 2. Fetch the result for each fixture individually for maximum reliability.
         for (const fixture of fixturesToScore) {
             try {
                 const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
@@ -145,7 +170,6 @@ const runScoringProcess = async () => {
             return { success: true, message: 'No results to score yet.' };
         }
 
-        // 3. Recalculate all user scores from scratch to ensure accuracy.
         console.log(`Recalculating scores for all users...`);
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
@@ -170,7 +194,6 @@ const runScoringProcess = async () => {
         return { success: false, message: 'An error occurred during scoring.' };
     }
 };
-
 
 // --- API Endpoints ---
 
@@ -281,7 +304,6 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
     }
 });
 
-// FINAL CORRECTED PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
     const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
@@ -290,25 +312,27 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        const existingPredictionsMap = new Map(user.predictions.map(p => [p.fixtureId.toString(), p]));
+        // A more robust way to handle updates and deletions
+        const updatedPredictions = user.predictions.filter(p => !predictions[p.fixtureId.toString()]); // Keep predictions not in the submission
 
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            const homeScore = predictionData.homeScore;
-            const awayScore = predictionData.awayScore;
-
-            if (homeScore === '' || awayScore === '' || homeScore === null || awayScore === null) {
-                existingPredictionsMap.delete(fixtureId);
-            } else {
-                existingPredictionsMap.set(fixtureId, {
+            if (predictionData.homeScore !== '' && predictionData.awayScore !== '') {
+                const newPrediction = {
                     fixtureId,
-                    homeScore: parseInt(homeScore),
-                    awayScore: parseInt(awayScore)
-                });
+                    homeScore: parseInt(predictionData.homeScore),
+                    awayScore: parseInt(predictionData.awayScore)
+                };
+                const existingIndex = updatedPredictions.findIndex(p => p.fixtureId.toString() === fixtureId);
+                if (existingIndex > -1) {
+                    updatedPredictions[existingIndex] = newPrediction;
+                } else {
+                    updatedPredictions.push(newPrediction);
+                }
             }
         }
         
-        user.predictions = Array.from(existingPredictionsMap.values());
+        user.predictions = updatedPredictions;
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
@@ -364,40 +388,15 @@ const seedFixturesFromAPI = async () => {
 
         console.log(`Found ${events.length} new fixtures for Gameweek ${gameweekToFetch}.`);
 
-        const fixturesToSave = await Promise.all(events.map(async (event) => {
-            const placeholderHomeLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strHomeTeam.substring(0,3).toUpperCase()}`;
-            const placeholderAwayLogo = `https://placehold.co/96x96/eee/ccc?text=${event.strAwayTeam.substring(0,3).toUpperCase()}`;
-            let homeLogo = placeholderHomeLogo;
-            let awayLogo = placeholderAwayLogo;
-            
-            try {
-                const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
-                if (homeTeamDetails.data.teams && homeTeamDetails.data.teams[0].strTeamBadge) {
-                    homeLogo = homeTeamDetails.data.teams[0].strTeamBadge;
-                }
-            } catch (e) { 
-                console.error(`Could not fetch home logo for ${event.strHomeTeam}`);
-            }
-
-            try {
-                const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
-                if (awayTeamDetails.data.teams && awayTeamDetails.data.teams[0].strTeamBadge) {
-                    awayLogo = awayTeamDetails.data.teams[0].strTeamBadge;
-                }
-            } catch (e) { 
-                console.error(`Could not fetch away logo for ${event.strAwayTeam}`);
-            }
-
-            return {
-                theSportsDbId: event.idEvent,
-                gameweek: parseInt(event.intRound),
-                homeTeam: event.strHomeTeam,
-                awayTeam: event.strAwayTeam,
-                homeLogo: homeLogo,
-                awayLogo: awayLogo,
-                kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
-                isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
-            };
+        const fixturesToSave = events.map(event => ({
+            theSportsDbId: event.idEvent,
+            gameweek: parseInt(event.intRound),
+            homeTeam: event.strHomeTeam,
+            awayTeam: event.strAwayTeam,
+            homeLogo: getLogoUrl(event.strHomeTeam), // Use internal logo map
+            awayLogo: getLogoUrl(event.strAwayTeam), // Use internal logo map
+            kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
+            isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
         }));
         
         if (fixturesToSave.length > 0) {
@@ -410,12 +409,50 @@ const seedFixturesFromAPI = async () => {
     }
 };
 
+// NEW: One-time function to repair missing logos in existing fixtures
+const repairMissingLogos = async () => {
+    try {
+        console.log("Checking for fixtures with missing logos...");
+        const fixturesToRepair = await Fixture.find({ 
+            $or: [ 
+                { homeLogo: /placehold\.co/ }, 
+                { awayLogo: /placehold\.co/ },
+                { homeLogo: { $exists: false } },
+                { awayLogo: { $exists: false } }
+            ]
+        });
+
+        if (fixturesToRepair.length === 0) {
+            console.log("No logos need repairing.");
+            return;
+        }
+
+        console.log(`Found ${fixturesToRepair.length} fixtures to repair...`);
+        const bulkUpdateOps = fixturesToRepair.map(fixture => ({
+            updateOne: {
+                filter: { _id: fixture._id },
+                update: { $set: { 
+                    homeLogo: getLogoUrl(fixture.homeTeam),
+                    awayLogo: getLogoUrl(fixture.awayTeam)
+                }}
+            }
+        }));
+
+        await Fixture.bulkWrite(bulkUpdateOps);
+        console.log("Successfully repaired missing logos.");
+
+    } catch (error) {
+        console.error("Error repairing missing logos:", error);
+    }
+};
+
 // --- Database Connection ---
 mongoose.connect(process.env.DATABASE_URL)
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        await seedFixturesFromAPI(); // Run seeder on startup
+        await repairMissingLogos(); // Run the repair function on startup
+        await seedFixturesFromAPI(); // Then check for new fixtures
 
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
@@ -431,3 +468,4 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
