@@ -7,8 +7,8 @@ const cors =require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const axios = require('axios');
 const cron = require('node-cron');
+const axios = require('axios');
 
 // --- Create the Express App ---
 const app = express();
@@ -64,7 +64,7 @@ const UserSchema = new mongoose.Schema({
 });
 
 const FixtureSchema = new mongoose.Schema({
-    theSportsDbId: { type: String, required: true, unique: true },
+    theSportsDbId: { type: String, unique: true, sparse: true },
     gameweek: { type: Number, required: true },
     homeTeam: { type: String, required: true },
     awayTeam: { type: String, required: true },
@@ -82,13 +82,13 @@ const FixtureSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 const Fixture = mongoose.model('Fixture', FixtureSchema);
 
-// --- NEW: Permanent Team Logo Mapping ---
+// --- Permanent Team Logo Mapping ---
 const teamLogos = {
     "Arsenal": "https://ssl.gstatic.com/onebox/media/sports/logos/4us2nCgl6kgZc0t3hpW75Q_96x96.png",
     "Aston Villa": "https://ssl.gstatic.com/onebox/media/sports/logos/N6-HDdY7In-fm-Y6LIADsA_96x96.png",
-    "Bournemouth": "https://ssl.gstatic.com/onebox/media/sports/logos/4ltl6D-3jH2x_o0l4q1e_g_96x96.png",
+    "AFC Bournemouth": "https://ssl.gstatic.com/onebox/media/sports/logos/4ltl6D-3jH2x_o0l4q1e_g_96x96.png",
     "Brentford": "https://ssl.gstatic.com/onebox/media/sports/logos/QOUce0o249-fYvS6T2K_cQ_96x96.png",
-    "Brighton": "https://ssl.gstatic.com/onebox/media/sports/logos/EKIe0e-ZIphOcfYwWr-4cg_96x96.png",
+    "Brighton & Hove Albion": "https://ssl.gstatic.com/onebox/media/sports/logos/EKIe0e-ZIphOcfYwWr-4cg_96x96.png",
     "Burnley": "https://ssl.gstatic.com/onebox/media/sports/logos/teLLOL2zEXINSAcV1Lw40g_96x96.png",
     "Chelsea": "https://ssl.gstatic.com/onebox/media/sports/logos/fhBITrIlbQxhVB60sqHmRw_96x96.png",
     "Crystal Palace": "https://ssl.gstatic.com/onebox/media/sports/logos/6Al17eKthA2qZf-49536gA_96x96.png",
@@ -96,20 +96,18 @@ const teamLogos = {
     "Fulham": "https://ssl.gstatic.com/onebox/media/sports/logos/8_a_fBC_UMkl_M2A_4_tKGg_96x96.png",
     "Leeds United": "https://ssl.gstatic.com/onebox/media/sports/logos/5dqf3k2-N9n982-4aCRaYQ_96x96.png",
     "Liverpool": "https://ssl.gstatic.com/onebox/media/sports/logos/0iZm6OOF1g_M51M4e_Q69A_96x96.png",
-    "Man City": "https://ssl.gstatic.com/onebox/media/sports/logos/z44l-a0W1v5FmgP1e2SinQ_96x96.png",
-    "Man Utd": "https://ssl.gstatic.com/onebox/media/sports/logos/z44l-a0W1v5FmgP1e2SinQ_96x96.png",
-    "Newcastle": "https://ssl.gstatic.com/onebox/media/sports/logos/96_A_j_1UcH1sNA_JpQ22A_96x96.png",
+    "Manchester City": "https://ssl.gstatic.com/onebox/media/sports/logos/z44l-a0W1v5FmgP1e2SinQ_96x96.png",
+    "Manchester United": "https://ssl.gstatic.com/onebox/media/sports/logos/z44l-a0W1v5FmgP1e2SinQ_96x96.png",
+    "Newcastle United": "https://ssl.gstatic.com/onebox/media/sports/logos/96_A_j_1UcH1sNA_JpQ22A_96x96.png",
     "Nottingham Forest": "https://ssl.gstatic.com/onebox/media/sports/logos/l3qf-XJ23wR1iMdlm20L8g_96x96.png",
     "Sunderland": "https://ssl.gstatic.com/onebox/media/sports/logos/SU5-2i_B2iJp12r9322y-g_96x96.png",
-    "Tottenham": "https://ssl.gstatic.com/onebox/media/sports/logos/k3Q_m6eVK0h_Hj6nPoW_9g_96x96.png",
-    "West Ham": "https://ssl.gstatic.com/onebox/media/sports/logos/bXyitHBcDm+VwKGHbj9Gag_96x96.png",
-    "Wolves": "https://ssl.gstatic.com/onebox/media/sports/logos/ZW73-D_KTZfFOE6C2oSw_g_96x96.png"
+    "Tottenham Hotspur": "https://ssl.gstatic.com/onebox/media/sports/logos/k3Q_m6eVK0h_Hj6nPoW_9g_96x96.png",
+    "West Ham United": "https://ssl.gstatic.com/onebox/media/sports/logos/bXyitHBcDm+VwKGHbj9Gag_96x96.png",
+    "Wolverhampton Wanderers": "https://ssl.gstatic.com/onebox/media/sports/logos/ZW73-D_KTZfFOE6C2oSw_g_96x96.png"
 };
 
-// Helper to find logo URL
 const getLogoUrl = (teamName) => {
-    const key = Object.keys(teamLogos).find(k => teamName.includes(k));
-    return key ? teamLogos[key] : `https://placehold.co/96x96/eee/ccc?text=${teamName.substring(0,3).toUpperCase()}`;
+    return teamLogos[teamName] || `https://placehold.co/96x96/eee/ccc?text=${teamName.substring(0,3).toUpperCase()}`;
 };
 
 // --- Helper Function for Scoring ---
@@ -139,8 +137,7 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
-        console.log(`Found ${fixturesToScore.length} fixtures needing scores.`);
-
+        
         let scoredFixturesCount = 0;
         
         for (const fixture of fixturesToScore) {
@@ -158,7 +155,6 @@ const runScoringProcess = async () => {
                         }}
                     );
                     scoredFixturesCount++;
-                    console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${result.intHomeScore}-${result.intAwayScore}`);
                 }
             } catch (e) {
                 console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
@@ -195,12 +191,11 @@ const runScoringProcess = async () => {
     }
 };
 
-// --- API Endpoints ---
 
+// --- API Endpoints ---
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { name, email, password } = req.body;
-        if (!name || !email || !password) return res.status(400).json({ message: 'All fields are required.' });
         const existingUser = await User.findOne({ email });
         if (existingUser) return res.status(400).json({ message: 'User with this email already exists.' });
         const salt = await bcrypt.genSalt(10);
@@ -212,6 +207,7 @@ app.post('/api/auth/register', async (req, res) => {
         res.status(500).json({ message: 'Server error during registration.' });
     }
 });
+
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -226,10 +222,10 @@ app.post('/api/auth/login', async (req, res) => {
         res.status(500).json({ message: 'Server error during login.' });
     }
 });
+
 app.get('/api/user/me', authenticateToken, async (req, res) => {
     try {
         const user = await User.findById(req.user.userId).select('-password');
-        if (!user) return res.status(404).json({ message: 'User not found.' });
         res.json(user);
     } catch (error) {
         res.status(500).json({ message: 'Error fetching user data.' });
@@ -262,6 +258,7 @@ app.get('/api/fixtures/:gameweek', async (req, res) => {
         res.status(500).json({ message: 'Error fetching fixtures' });
     }
 });
+
 app.get('/api/gameweeks', async (req, res) => {
     try {
         const gameweeks = await Fixture.distinct('gameweek');
@@ -270,6 +267,7 @@ app.get('/api/gameweeks', async (req, res) => {
         res.status(500).json({ message: 'Error fetching gameweeks.' });
     }
 });
+
 app.get('/api/leaderboard', async (req, res) => {
     try {
         const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
@@ -278,6 +276,7 @@ app.get('/api/leaderboard', async (req, res) => {
         res.status(500).json({ message: 'Error fetching leaderboard data.' });
     }
 });
+
 app.get('/api/predictions/:userId/:gameweek', authenticateToken, async(req, res) => {
     try {
         const { userId, gameweek } = req.params;
@@ -293,6 +292,7 @@ app.get('/api/predictions/:userId/:gameweek', authenticateToken, async(req, res)
         res.status(500).json({ message: 'Error fetching prediction history.' });
     }
 });
+
 app.post('/api/prophecies', authenticateToken, async (req, res) => {
     const { prophecies } = req.body;
     const userId = req.user.userId;
@@ -312,27 +312,25 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        // A more robust way to handle updates and deletions
-        const updatedPredictions = user.predictions.filter(p => !predictions[p.fixtureId.toString()]); // Keep predictions not in the submission
+        const existingPredictionsMap = new Map(user.predictions.map(p => [p.fixtureId.toString(), p]));
 
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            if (predictionData.homeScore !== '' && predictionData.awayScore !== '') {
-                const newPrediction = {
+            const homeScore = predictionData.homeScore;
+            const awayScore = predictionData.awayScore;
+
+            if (homeScore === '' || awayScore === '' || homeScore === null || awayScore === null) {
+                existingPredictionsMap.delete(fixtureId);
+            } else {
+                existingPredictionsMap.set(fixtureId, {
                     fixtureId,
-                    homeScore: parseInt(predictionData.homeScore),
-                    awayScore: parseInt(predictionData.awayScore)
-                };
-                const existingIndex = updatedPredictions.findIndex(p => p.fixtureId.toString() === fixtureId);
-                if (existingIndex > -1) {
-                    updatedPredictions[existingIndex] = newPrediction;
-                } else {
-                    updatedPredictions.push(newPrediction);
-                }
+                    homeScore: parseInt(homeScore),
+                    awayScore: parseInt(awayScore)
+                });
             }
         }
         
-        user.predictions = updatedPredictions;
+        user.predictions = Array.from(existingPredictionsMap.values());
         user.chips.jokerFixtureId = jokerFixtureId;
         if (jokerFixtureId) {
             user.chips.jokerUsedInSeason = true;
@@ -346,7 +344,6 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
     }
 });
 
-
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
     if (result.success) {
@@ -355,6 +352,7 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
         res.status(500).json(result);
     }
 });
+
 
 // --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
 const seedFixturesFromAPI = async () => {
@@ -393,8 +391,8 @@ const seedFixturesFromAPI = async () => {
             gameweek: parseInt(event.intRound),
             homeTeam: event.strHomeTeam,
             awayTeam: event.strAwayTeam,
-            homeLogo: getLogoUrl(event.strHomeTeam), // Use internal logo map
-            awayLogo: getLogoUrl(event.strAwayTeam), // Use internal logo map
+            homeLogo: getLogoUrl(event.strHomeTeam),
+            awayLogo: getLogoUrl(event.strAwayTeam),
             kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
             isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
         }));
@@ -409,16 +407,18 @@ const seedFixturesFromAPI = async () => {
     }
 };
 
-// NEW: One-time function to repair missing logos in existing fixtures
+// One-time function to repair missing logos in existing fixtures
 const repairMissingLogos = async () => {
     try {
-        console.log("Checking for fixtures with missing logos...");
+        console.log("Checking for fixtures with missing or placeholder logos...");
         const fixturesToRepair = await Fixture.find({ 
             $or: [ 
-                { homeLogo: /placehold\.co/ }, 
-                { awayLogo: /placehold\.co/ },
                 { homeLogo: { $exists: false } },
-                { awayLogo: { $exists: false } }
+                { awayLogo: { $exists: false } },
+                { homeLogo: "" },
+                { awayLogo: "" },
+                { homeLogo: { $regex: /placehold\.co/ } },
+                { awayLogo: { $regex: /placehold\.co/ } }
             ]
         });
 
@@ -451,8 +451,8 @@ mongoose.connect(process.env.DATABASE_URL)
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        await repairMissingLogos(); // Run the repair function on startup
-        await seedFixturesFromAPI(); // Then check for new fixtures
+        await repairMissingLogos();
+        await seedFixturesFromAPI();
 
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
@@ -461,11 +461,10 @@ mongoose.connect(process.env.DATABASE_URL)
         cron.schedule('0 4 * * *', runScoringProcess);
         console.log('Automated scoring job scheduled to run daily at 04:00 UTC.');
         
-        cron.schedule('0 5 * * *', seedFixturesFromAPI); // Check for new fixtures daily
+        cron.schedule('0 5 * * *', seedFixturesFromAPI);
         console.log('Automated fixture check job scheduled to run daily.');
     })
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
