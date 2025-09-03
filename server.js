@@ -110,6 +110,7 @@ const getLogoUrl = (teamName) => {
     return teamLogos[teamName] || `https://placehold.co/96x96/eee/ccc?text=${teamName.substring(0,3).toUpperCase()}`;
 };
 
+
 // --- Helper Function for Scoring ---
 const calculatePoints = (prediction, actualScore) => {
     const predHome = Number(prediction.homeScore);
@@ -207,7 +208,6 @@ app.post('/api/auth/register', async (req, res) => {
         res.status(500).json({ message: 'Server error during registration.' });
     }
 });
-
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -222,7 +222,6 @@ app.post('/api/auth/login', async (req, res) => {
         res.status(500).json({ message: 'Server error during login.' });
     }
 });
-
 app.get('/api/user/me', authenticateToken, async (req, res) => {
     try {
         const user = await User.findById(req.user.userId).select('-password');
@@ -231,7 +230,6 @@ app.get('/api/user/me', authenticateToken, async (req, res) => {
         res.status(500).json({ message: 'Error fetching user data.' });
     }
 });
-
 app.get('/api/fixtures', async (req, res) => {
     try {
         const upcomingFixture = await Fixture.findOne({ kickoffTime: { $gte: new Date() } }).sort({ kickoffTime: 1 });
@@ -248,7 +246,6 @@ app.get('/api/fixtures', async (req, res) => {
         res.status(500).json({ message: 'Error fetching fixtures' });
     }
 });
-
 app.get('/api/fixtures/:gameweek', async (req, res) => {
     try {
         const gameweekToFetch = parseInt(req.params.gameweek);
@@ -258,7 +255,6 @@ app.get('/api/fixtures/:gameweek', async (req, res) => {
         res.status(500).json({ message: 'Error fetching fixtures' });
     }
 });
-
 app.get('/api/gameweeks', async (req, res) => {
     try {
         const gameweeks = await Fixture.distinct('gameweek');
@@ -267,7 +263,6 @@ app.get('/api/gameweeks', async (req, res) => {
         res.status(500).json({ message: 'Error fetching gameweeks.' });
     }
 });
-
 app.get('/api/leaderboard', async (req, res) => {
     try {
         const leaderboard = await User.find({}).sort({ score: -1 }).select('name score');
@@ -276,23 +271,19 @@ app.get('/api/leaderboard', async (req, res) => {
         res.status(500).json({ message: 'Error fetching leaderboard data.' });
     }
 });
-
 app.get('/api/predictions/:userId/:gameweek', authenticateToken, async(req, res) => {
     try {
         const { userId, gameweek } = req.params;
         const user = await User.findById(userId).populate('predictions.fixtureId');
         if (!user) return res.status(404).json({ message: 'User not found.' });
-
         const history = user.predictions
             .filter(p => p.fixtureId && p.fixtureId.gameweek == gameweek && new Date(p.fixtureId.kickoffTime) < new Date())
             .map(p => ({ fixture: p.fixtureId, prediction: { homeScore: p.homeScore, awayScore: p.awayScore } }));
-        
         res.json({ userName: user.name, history });
     } catch(error) {
         res.status(500).json({ message: 'Error fetching prediction history.' });
     }
 });
-
 app.post('/api/prophecies', authenticateToken, async (req, res) => {
     const { prophecies } = req.body;
     const userId = req.user.userId;
@@ -303,39 +294,28 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
     }
 });
-
 app.post('/api/predictions', authenticateToken, async (req, res) => {
     const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
-
     try {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
-
         const existingPredictionsMap = new Map(user.predictions.map(p => [p.fixtureId.toString(), p]));
-
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            const homeScore = predictionData.homeScore;
-            const awayScore = predictionData.awayScore;
-
-            if (homeScore === '' || awayScore === '' || homeScore === null || awayScore === null) {
-                existingPredictionsMap.delete(fixtureId);
-            } else {
+            if (predictionData.homeScore !== '' && predictionData.awayScore !== '') {
                 existingPredictionsMap.set(fixtureId, {
                     fixtureId,
-                    homeScore: parseInt(homeScore),
-                    awayScore: parseInt(awayScore)
+                    homeScore: parseInt(predictionData.homeScore),
+                    awayScore: parseInt(predictionData.awayScore)
                 });
+            } else {
+                existingPredictionsMap.delete(fixtureId);
             }
         }
-        
         user.predictions = Array.from(existingPredictionsMap.values());
         user.chips.jokerFixtureId = jokerFixtureId;
-        if (jokerFixtureId) {
-            user.chips.jokerUsedInSeason = true;
-        }
-
+        if (jokerFixtureId) user.chips.jokerUsedInSeason = true;
         await user.save();
         res.status(200).json({ success: true, message: 'Predictions saved.' });
     } catch (error) {
@@ -343,16 +323,11 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving predictions.' });
     }
 });
-
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
-    if (result.success) {
-        res.status(200).json(result);
-    } else {
-        res.status(500).json(result);
-    }
+    if(result.success) res.status(200).json(result);
+    else res.status(500).json(result);
 });
-
 
 // --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
 const seedFixturesFromAPI = async () => {
