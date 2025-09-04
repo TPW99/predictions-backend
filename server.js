@@ -106,8 +106,19 @@ const teamLogos = {
     "Wolverhampton Wanderers": "https://ssl.gstatic.com/onebox/media/sports/logos/ZW73-D_KTZfFOE6C2oSw_g_96x96.png"
 };
 
-const getLogoUrl = (teamName) => {
-    return teamLogos[teamName] || `https://placehold.co/96x96/eee/ccc?text=${teamName.substring(0,3).toUpperCase()}`;
+// CORRECTED: More robust function to match API names (e.g., "Wolves") to our full names
+const getLogoUrl = (apiTeamName) => {
+    // Try for an exact match first
+    if (teamLogos[apiTeamName]) {
+        return teamLogos[apiTeamName];
+    }
+    // Try finding a key in our map that INCLUDES the API name (e.g., "Wolverhampton Wanderers" includes "Wolves")
+    const key = Object.keys(teamLogos).find(k => k.includes(apiTeamName));
+    if (key) {
+        return teamLogos[key];
+    }
+    // Fallback to a placeholder if no match is found
+    return `https://placehold.co/96x96/eee/ccc?text=${apiTeamName.substring(0,3).toUpperCase()}`;
 };
 
 
@@ -122,13 +133,14 @@ const calculatePoints = (prediction, actualScore) => {
     return 0;
 };
 
-// --- Reusable Scoring Logic ---
+// --- Reusable Scoring Logic (FINAL ROBUST VERSION) ---
 const runScoringProcess = async () => {
     console.log('Running robust scoring process...');
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
+        // 1. Find all fixtures that have started but have not yet been scored.
         const fixturesToScore = await Fixture.find({ 
             kickoffTime: { $lt: new Date() }, 
             'actualScore.home': null 
@@ -138,15 +150,18 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
-        
+        console.log(`Found ${fixturesToScore.length} fixtures needing scores.`);
+
         let scoredFixturesCount = 0;
         
+        // 2. Fetch the result for each fixture individually for maximum reliability.
         for (const fixture of fixturesToScore) {
             try {
                 const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
                 const resultsResponse = await axios.get(resultsUrl);
                 const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
+                // Check if the match is finished and has a score
                 if (result && result.intHomeScore != null && result.intAwayScore != null) {
                     await Fixture.updateOne(
                         { _id: fixture._id },
@@ -156,6 +171,7 @@ const runScoringProcess = async () => {
                         }}
                     );
                     scoredFixturesCount++;
+                    console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${result.intHomeScore}-${result.intAwayScore}`);
                 }
             } catch (e) {
                 console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
@@ -167,6 +183,7 @@ const runScoringProcess = async () => {
             return { success: true, message: 'No results to score yet.' };
         }
 
+        // 3. Recalculate all user scores from scratch to ensure accuracy.
         console.log(`Recalculating scores for all users...`);
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
@@ -329,7 +346,7 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     else res.status(500).json(result);
 });
 
-// --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
+// --- TheSportsDB API Seeding Logic ---
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
@@ -366,8 +383,8 @@ const seedFixturesFromAPI = async () => {
             gameweek: parseInt(event.intRound),
             homeTeam: event.strHomeTeam,
             awayTeam: event.strAwayTeam,
-            homeLogo: getLogoUrl(event.strHomeTeam),
-            awayLogo: getLogoUrl(event.strAwayTeam),
+            homeLogo: getLogoUrl(event.strHomeTeam), // Use internal logo map
+            awayLogo: getLogoUrl(event.strAwayTeam), // Use internal logo map
             kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
             isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
         }));
