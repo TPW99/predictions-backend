@@ -371,6 +371,7 @@ const seedFixturesFromAPI = async () => {
 
 // One-time function to repair missing logos in existing fixtures
 const repairMissingLogos = async () => {
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) {
@@ -381,10 +382,8 @@ const repairMissingLogos = async () => {
         console.log("Checking for fixtures with missing or placeholder logos...");
         const fixturesToRepair = await Fixture.find({ 
             $or: [ 
-                { homeLogo: { $exists: false } },
-                { awayLogo: { $exists: false } },
-                { homeLogo: "" },
-                { awayLogo: "" }
+                { homeLogo: { $exists: false } }, { awayLogo: { $exists: false } },
+                { homeLogo: "" }, { awayLogo: "" }
             ]
         });
 
@@ -397,19 +396,22 @@ const repairMissingLogos = async () => {
         
         for (const fixture of fixturesToRepair) {
             try {
-                let newHomeLogo = fixture.homeLogo;
-                let newAwayLogo = fixture.awayLogo;
+                let newHomeLogo = fixture.homeLogo || '';
+                let newAwayLogo = fixture.awayLogo || '';
 
                 if (!newHomeLogo && fixture.homeTeamId) {
+                    await sleep(1100); // Wait 1.1 seconds before the request to be safe
                     const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${fixture.homeTeamId}`);
                     newHomeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
                 }
                 if (!newAwayLogo && fixture.awayTeamId) {
+                    await sleep(1100); // Wait 1.1 seconds before the request to be safe
                     const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${fixture.awayTeamId}`);
                     newAwayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
                 }
                 
                 await Fixture.updateOne({_id: fixture._id}, { $set: { homeLogo: newHomeLogo, awayLogo: newAwayLogo }});
+                console.log(`Repaired logo for fixture: ${fixture.homeTeam} vs ${fixture.awayTeam}`);
 
             } catch(e) {
                 console.error(`Error repairing logo for fixture ${fixture._id}: ${e.message}`);
