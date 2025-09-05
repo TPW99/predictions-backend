@@ -65,13 +65,13 @@ const UserSchema = new mongoose.Schema({
 
 const FixtureSchema = new mongoose.Schema({
     theSportsDbId: { type: String, unique: true, sparse: true },
-    homeTeamId: { type: String }, // To help repair logos
-    awayTeamId: { type: String }, // To help repair logos
+    homeTeamId: { type: String },
+    awayTeamId: { type: String },
     gameweek: { type: Number, required: true },
     homeTeam: { type: String, required: true },
     awayTeam: { type: String, required: true },
-    homeLogo: { type: String }, 
-    awayLogo: { type: String }, 
+    homeLogo: { type: String },
+    awayLogo: { type: String },
     kickoffTime: { type: Date, required: true },
     isDerby: { type: Boolean, default: false },
     actualScore: {
@@ -102,18 +102,19 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        const fixturesToScore = await Fixture.find({ 
-            kickoffTime: { $lt: new Date() }, 
-            'actualScore.home': null 
+        const fixturesToScore = await Fixture.find({
+            kickoffTime: { $lt: new Date() },
+            'actualScore.home': null
         });
 
         if (fixturesToScore.length === 0) {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
-        
+        console.log(`Found ${fixturesToScore.length} fixtures needing scores.`);
+
         let scoredFixturesCount = 0;
-        
+
         for (const fixture of fixturesToScore) {
             try {
                 const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
@@ -123,12 +124,13 @@ const runScoringProcess = async () => {
                 if (result && result.intHomeScore != null && result.intAwayScore != null) {
                     await Fixture.updateOne(
                         { _id: fixture._id },
-                        { $set: { 
+                        { $set: {
                             'actualScore.home': parseInt(result.intHomeScore),
                             'actualScore.away': parseInt(result.intAwayScore)
                         }}
                     );
                     scoredFixturesCount++;
+                    console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${result.intHomeScore}-${result.intAwayScore}`);
                 }
             } catch (e) {
                 console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
@@ -164,6 +166,7 @@ const runScoringProcess = async () => {
         return { success: false, message: 'An error occurred during scoring.' };
     }
 };
+
 
 // --- API Endpoints ---
 app.post('/api/auth/register', async (req, res) => {
@@ -301,7 +304,7 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     else res.status(500).json(result);
 });
 
-// --- TheSportsDB API Seeding Logic ---
+// --- TheSportsDB API Seeding Logic (FINAL INTELLIGENT VERSION) ---
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
@@ -309,112 +312,74 @@ const seedFixturesFromAPI = async () => {
             console.log("TheSportsDB API key not found. Skipping seeding.");
             return;
         }
-        
+
+        // 1. Determine the actual current gameweek based on today's date
+        const seasonStartDate = new Date('2025-08-15T00:00:00Z');
+        const now = new Date();
+        const weekInMillis = 7 * 24 * 60 * 60 * 1000;
+        let realCurrentGameweek = Math.floor((now - seasonStartDate) / weekInMillis) + 1;
+        if (realCurrentGameweek < 1) realCurrentGameweek = 1;
+        if (realCurrentGameweek > 38) realCurrentGameweek = 38;
+
+        // 2. Find the highest gameweek we have in our database
         const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
         const lastKnownGameweek = lastFixture ? lastFixture.gameweek : 0;
-        const gameweekToFetch = lastKnownGameweek + 1;
 
-        if (gameweekToFetch > 38) {
-            console.log("All 38 gameweeks seem to be in the database.");
+        if (lastKnownGameweek >= realCurrentGameweek) {
+            console.log(`Database is up to date. Last known gameweek is ${lastKnownGameweek}.`);
             return;
         }
 
-        console.log(`Checking API for fixtures for Gameweek ${gameweekToFetch}...`);
-        
-        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gameweekToFetch}&s=2025-2026`;
-        
-        const response = await axios.get(url);
-        const events = response.data.events;
+        // 3. Loop and fetch all missing gameweeks
+        for (let gw = lastKnownGameweek + 1; gw <= realCurrentGameweek; gw++) {
+            console.log(`Checking API for missing fixtures for Gameweek ${gw}...`);
+            
+            const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
+            
+            const response = await axios.get(url);
+            const events = response.data.events;
 
-        if (!events || events.length === 0) {
-            console.log(`API returned no fixtures for Gameweek ${gameweekToFetch}. This is normal if they haven't been announced yet.`);
-            return;
-        }
+            if (!events || events.length === 0) {
+                console.log(`API returned no fixtures for Gameweek ${gw}.`);
+                continue; // Move to the next gameweek
+            }
 
-        console.log(`Found ${events.length} new fixtures for Gameweek ${gameweekToFetch}.`);
+            console.log(`Found ${events.length} new fixtures for Gameweek ${gw}.`);
 
-        const fixturesToSave = await Promise.all(events.map(async (event) => {
-            let homeLogo = '', awayLogo = '';
-            try {
-                const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
-                homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
-            } catch (e) { console.error(`Could not fetch home logo for ${event.strHomeTeam}`)}
+            const fixturesToSave = await Promise.all(events.map(async (event) => {
+                let homeLogo = '', awayLogo = '';
+                try {
+                    const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
+                    homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
+                } catch (e) { console.error(`Could not fetch home logo for ${event.strHomeTeam}`)}
 
-            try {
-                const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
-                awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
-            } catch (e) { console.error(`Could not fetch away logo for ${event.strAwayTeam}`)}
+                try {
+                    const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
+                    awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
+                } catch (e) { console.error(`Could not fetch away logo for ${event.strAwayTeam}`)}
 
-            return {
-                theSportsDbId: event.idEvent,
-                gameweek: parseInt(event.intRound),
-                homeTeam: event.strHomeTeam,
-                awayTeam: event.strAwayTeam,
-                homeLogo: homeLogo,
-                awayLogo: awayLogo,
-                homeTeamId: event.idHomeTeam,
-                awayTeamId: event.idAwayTeam,
-                kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
-                isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
-            };
-        }));
-        
-        if (fixturesToSave.length > 0) {
-            await Fixture.insertMany(fixturesToSave);
-            console.log(`Successfully added Gameweek ${gameweekToFetch} fixtures to the database!`);
+                return {
+                    theSportsDbId: event.idEvent,
+                    gameweek: parseInt(event.intRound),
+                    homeTeam: event.strHomeTeam,
+                    awayTeam: event.strAwayTeam,
+                    homeLogo: homeLogo,
+                    awayLogo: awayLogo,
+                    homeTeamId: event.idHomeTeam,
+                    awayTeamId: event.idAwayTeam,
+                    kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
+                    isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
+                };
+            }));
+            
+            if (fixturesToSave.length > 0) {
+                await Fixture.insertMany(fixturesToSave);
+                console.log(`Successfully added Gameweek ${gw} fixtures to the database!`);
+            }
         }
 
     } catch (error) {
         console.error('Error during API seeding process:', error);
-    }
-};
-
-// One-time function to repair missing logos in existing fixtures
-const repairMissingLogos = async () => {
-    try {
-        const apiKey = process.env.THESPORTSDB_API_KEY;
-        if (!apiKey) {
-            console.log("TheSportsDB API key not found for logo repair.");
-            return;
-        }
-        
-        console.log("Checking for fixtures with missing or placeholder logos...");
-        const fixturesToRepair = await Fixture.find({ 
-            $or: [ 
-                { homeLogo: { $exists: false } },
-                { awayLogo: { $exists: false } },
-                { homeLogo: "" },
-                { awayLogo: "" }
-            ]
-        });
-
-        if (fixturesToRepair.length === 0) {
-            console.log("No logos need repairing.");
-            return;
-        }
-
-        console.log(`Found ${fixturesToRepair.length} fixtures to repair...`);
-        
-        for (const fixture of fixturesToRepair) {
-            try {
-                if (!fixture.homeLogo && fixture.homeTeamId) {
-                    const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${fixture.homeTeamId}`);
-                    fixture.homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
-                }
-                if (!fixture.awayLogo && fixture.awayTeamId) {
-                    const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${fixture.awayTeamId}`);
-                    fixture.awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
-                }
-                await fixture.save();
-            } catch(e) {
-                console.error(`Error repairing logo for fixture ${fixture._id}: ${e.message}`);
-            }
-        }
-
-        console.log("Successfully finished logo repair process.");
-
-    } catch (error) {
-        console.error("Error repairing missing logos:", error);
     }
 };
 
@@ -424,8 +389,7 @@ mongoose.connect(process.env.DATABASE_URL)
     .then(async () => {
         console.log('Successfully connected to MongoDB Atlas!');
         
-        await repairMissingLogos();
-        await seedFixturesFromAPI();
+        await seedFixturesFromAPI(); // Run seeder on startup
 
         app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
@@ -434,7 +398,7 @@ mongoose.connect(process.env.DATABASE_URL)
         cron.schedule('0 4 * * *', runScoringProcess);
         console.log('Automated scoring job scheduled to run daily at 04:00 UTC.');
         
-        cron.schedule('0 5 * * *', seedFixturesFromAPI);
+        cron.schedule('0 5 * * *', seedFixturesFromAPI); // Check for new fixtures daily
         console.log('Automated fixture check job scheduled to run daily.');
     })
     .catch((error) => {
