@@ -7,8 +7,8 @@ const cors =require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const cron = require('node-cron');
 const axios = require('axios');
+const cron = require('node-cron');
 
 // --- Create the Express App ---
 const app = express();
@@ -269,47 +269,70 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
     }
 });
+
+// FINAL ROBUST PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
     const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
+
     try {
         const user = await User.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found.' });
+
         const existingPredictionsMap = new Map(user.predictions.map(p => [p.fixtureId.toString(), p]));
+
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
             const homeScore = predictionData.homeScore;
             const awayScore = predictionData.awayScore;
+
             const homeScoreNum = Number(homeScore);
             const awayScoreNum = Number(awayScore);
 
             if (homeScore === '' || awayScore === '' || isNaN(homeScoreNum) || isNaN(awayScoreNum)) {
                 existingPredictionsMap.delete(fixtureId);
             } else {
-                existingPredictionsMap.set(fixtureId, {
-                    fixtureId,
-                    homeScore: homeScoreNum,
-                    awayScore: awayScoreNum
-                });
+                const existingPred = existingPredictionsMap.get(fixtureId);
+                if (existingPred) {
+                    existingPred.homeScore = homeScoreNum;
+                    existingPred.awayScore = awayScoreNum;
+                } else {
+                    existingPredictionsMap.set(fixtureId, {
+                        fixtureId,
+                        homeScore: homeScoreNum,
+                        awayScore: awayScoreNum
+                    });
+                }
             }
         }
-        user.predictions = Array.from(existingPredictionsMap.values());
-        user.chips.jokerFixtureId = jokerFixtureId;
-        if (jokerFixtureId) user.chips.jokerUsedInSeason = true;
-        await user.save();
+        
+        const finalPredictions = Array.from(existingPredictionsMap.values());
+        
+        const updateData = {
+            predictions: finalPredictions,
+            'chips.jokerFixtureId': jokerFixtureId
+        };
+
+        if (jokerFixtureId) {
+            updateData['chips.jokerUsedInSeason'] = true;
+        }
+        
+        await User.updateOne({ _id: userId }, { $set: updateData });
+
         res.status(200).json({ success: true, message: 'Predictions saved.' });
     } catch (error) {
         console.error("Error saving predictions:", error);
         res.status(500).json({ success: false, message: 'Error saving predictions.' });
     }
 });
+
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
     if(result.success) res.status(200).json(result);
     else res.status(500).json(result);
 });
 
-// --- TheSportsDB API Seeding Logic (FINAL INTELLIGENT VERSION) ---
+// --- TheSportsDB API Seeding Logic ---
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
