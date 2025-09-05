@@ -280,11 +280,10 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
             const predictionData = predictions[fixtureId];
             const homeScore = predictionData.homeScore;
             const awayScore = predictionData.awayScore;
+            const homeScoreNum = Number(homeScore);
+            const awayScoreNum = Number(awayScore);
 
-            const homeScoreNum = parseInt(homeScore, 10);
-            const awayScoreNum = parseInt(awayScore, 10);
-
-            if (isNaN(homeScoreNum) || isNaN(awayScoreNum)) {
+            if (homeScore === '' || awayScore === '' || isNaN(homeScoreNum) || isNaN(awayScoreNum)) {
                 existingPredictionsMap.delete(fixtureId);
             } else {
                 existingPredictionsMap.set(fixtureId, {
@@ -407,4 +406,3 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
