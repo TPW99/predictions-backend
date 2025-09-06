@@ -148,9 +148,10 @@ const runScoringProcess = async () => {
             console.log('No new fixtures to score.');
             return { success: true, message: 'No new fixtures to score.' };
         }
-        
+        console.log(`Found ${fixturesToScore.length} fixtures needing scores.`);
+
         let scoredFixturesCount = 0;
-        
+
         for (const fixture of fixturesToScore) {
             try {
                 const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
@@ -166,6 +167,7 @@ const runScoringProcess = async () => {
                         }}
                     );
                     scoredFixturesCount++;
+                    console.log(`Score updated for ${fixture.homeTeam} vs ${fixture.awayTeam}: ${result.intHomeScore}-${result.intAwayScore}`);
                 }
             } catch (e) {
                 console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
@@ -338,7 +340,7 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     else res.status(500).json(result);
 });
 
-// --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
+// --- TheSportsDB API Seeding Logic (FINAL INTELLIGENT VERSION) ---
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
@@ -346,46 +348,53 @@ const seedFixturesFromAPI = async () => {
             console.log("TheSportsDB API key not found. Skipping seeding.");
             return;
         }
-        
-        const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
-        const lastKnownGameweek = lastFixture ? lastFixture.gameweek : 0;
-        const gameweekToFetch = lastKnownGameweek + 1;
 
-        if (gameweekToFetch > 38) {
-            console.log("All 38 gameweeks seem to be in the database.");
-            return;
-        }
+        const seasonStartDate = new Date('2025-08-15T00:00:00Z');
+        const now = new Date();
+        const weekInMillis = 7 * 24 * 60 * 60 * 1000;
+        let realCurrentGameweek = Math.floor((now - seasonStartDate) / weekInMillis) + 1;
+        if (realCurrentGameweek < 1) realCurrentGameweek = 1;
+        if (realCurrentGameweek > 38) realCurrentGameweek = 38;
 
-        console.log(`Checking API for fixtures for Gameweek ${gameweekToFetch}...`);
-        
-        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gameweekToFetch}&s=2025-2026`;
-        
-        const response = await axios.get(url);
-        const events = response.data.events;
+        const existingGameweeks = await Fixture.distinct('gameweek');
 
-        if (!events || events.length === 0) {
-            console.log(`API returned no fixtures for Gameweek ${gameweekToFetch}. This is normal if they haven't been announced yet.`);
-            return;
-        }
+        for (let gw = 1; gw <= realCurrentGameweek; gw++) {
+            if (existingGameweeks.includes(gw)) {
+                console.log(`Gameweek ${gw} already in DB. Skipping.`);
+                continue;
+            }
 
-        console.log(`Found ${events.length} new fixtures for Gameweek ${gameweekToFetch}.`);
+            console.log(`Checking API for missing fixtures for Gameweek ${gw}...`);
+            
+            const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
+            
+            const response = await axios.get(url);
+            const events = response.data.events;
 
-        const fixturesToSave = events.map(event => ({
-            theSportsDbId: event.idEvent,
-            gameweek: parseInt(event.intRound),
-            homeTeam: event.strHomeTeam,
-            awayTeam: event.strAwayTeam,
-            homeLogo: getLogoUrl(event.strHomeTeam), // Use internal logo map
-            awayLogo: getLogoUrl(event.strAwayTeam), // Use internal logo map
-            homeTeamId: event.idHomeTeam,
-            awayTeamId: event.idAwayTeam,
-            kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
-            isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
-        }));
-        
-        if (fixturesToSave.length > 0) {
-            await Fixture.insertMany(fixturesToSave);
-            console.log(`Successfully added Gameweek ${gameweekToFetch} fixtures to the database!`);
+            if (!events || events.length === 0) {
+                console.log(`API returned no fixtures for Gameweek ${gw}.`);
+                continue;
+            }
+
+            console.log(`Found ${events.length} new fixtures for Gameweek ${gw}.`);
+
+            const fixturesToSave = events.map(event => ({
+                theSportsDbId: event.idEvent,
+                gameweek: parseInt(event.intRound),
+                homeTeam: event.strHomeTeam,
+                awayTeam: event.strAwayTeam,
+                homeLogo: getLogoUrl(event.strHomeTeam),
+                awayLogo: getLogoUrl(event.strAwayTeam),
+                homeTeamId: event.idHomeTeam,
+                awayTeamId: event.idAwayTeam,
+                kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
+                isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
+            }));
+            
+            if (fixturesToSave.length > 0) {
+                await Fixture.insertMany(fixturesToSave);
+                console.log(`Successfully added Gameweek ${gw} fixtures to the database!`);
+            }
         }
 
     } catch (error) {
@@ -393,10 +402,9 @@ const seedFixturesFromAPI = async () => {
     }
 };
 
-// One-time function to repair missing logos in existing fixtures
 const repairMissingLogos = async () => {
     try {
-        console.log("Checking for fixtures with missing or placeholder logos...");
+        console.log("Checking for fixtures with missing or incorrect logos...");
         const fixturesToRepair = await Fixture.find({ 
             $or: [ 
                 { homeLogo: { $exists: false } }, { awayLogo: { $exists: false } },
@@ -422,13 +430,16 @@ const repairMissingLogos = async () => {
             }
         }));
 
-        await Fixture.bulkWrite(bulkUpdateOps);
-        console.log("Successfully repaired missing logos.");
+        if (bulkUpdateOps.length > 0) {
+            await Fixture.bulkWrite(bulkUpdateOps);
+            console.log("Successfully repaired missing logos.");
+        }
 
     } catch (error) {
         console.error("Error repairing missing logos:", error);
     }
 };
+
 
 // --- Database Connection ---
 mongoose.connect(process.env.DATABASE_URL)
@@ -452,4 +463,3 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
-
