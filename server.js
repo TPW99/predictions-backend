@@ -379,11 +379,12 @@ const repairMissingLogos = async () => {
             return;
         }
         
-        console.log("Checking for fixtures with missing or placeholder logos...");
+        console.log("Checking for fixtures with missing or incorrect logos...");
         const fixturesToRepair = await Fixture.find({ 
             $or: [ 
                 { homeLogo: { $exists: false } }, { awayLogo: { $exists: false } },
-                { homeLogo: "" }, { awayLogo: "" }
+                { homeLogo: "" }, { awayLogo: "" },
+                { homeLogo: { $regex: /ssl\.gstatic\.com/ } } // Find old broken URLs
             ]
         });
 
@@ -396,16 +397,16 @@ const repairMissingLogos = async () => {
         
         for (const fixture of fixturesToRepair) {
             try {
-                let newHomeLogo = fixture.homeLogo || '';
-                let newAwayLogo = fixture.awayLogo || '';
+                let newHomeLogo = fixture.homeLogo;
+                let newAwayLogo = fixture.awayLogo;
 
-                if (!newHomeLogo && fixture.homeTeamId) {
-                    await sleep(1100); // Wait 1.1 seconds before the request to be safe
+                if (!newHomeLogo || newHomeLogo.includes('gstatic')) {
+                    await sleep(1100); 
                     const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${fixture.homeTeamId}`);
                     newHomeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
                 }
-                if (!newAwayLogo && fixture.awayTeamId) {
-                    await sleep(1100); // Wait 1.1 seconds before the request to be safe
+                if (!newAwayLogo || newAwayLogo.includes('gstatic')) {
+                    await sleep(1100); 
                     const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${fixture.awayTeamId}`);
                     newAwayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
                 }
