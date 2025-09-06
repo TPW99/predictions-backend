@@ -91,7 +91,7 @@ const teamLogos = {
     "AFC Bournemouth": "https://r2.thesportsdb.com/images/media/team/badge/y08nak1534071116.png",
     "Bournemouth": "https://r2.thesportsdb.com/images/media/team/badge/y08nak1534071116.png",
     "Brentford": "https://r2.thesportsdb.com/images/media/team/badge/grv1aw1546453779.png",
-    "Brighton & Hove Albion": "https://r2.thesportsdb.com/images/media/team/badge/ywypts1448810904.png",
+    "Brighton and Hove Albion": "https://r2.thesportsdb.com/images/media/team/badge/ywypts1448810904.png",
     "Brighton": "https://r2.thesportsdb.com/images/media/team/badge/ywypts1448810904.png",
     "Burnley": "https://r2.thesportsdb.com/images/media/team/badge/ql7nl31686893820.png",
     "Chelsea": "https://r2.thesportsdb.com/images/media/team/badge/yvwvtu1448813215.png",
