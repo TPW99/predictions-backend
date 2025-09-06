@@ -84,13 +84,15 @@ const FixtureSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 const Fixture = mongoose.model('Fixture', FixtureSchema);
 
-// --- Permanent Team Logo Mapping ---
+// --- More Robust Team Logo Mapping ---
 const teamLogos = {
     "Arsenal": "https://r2.thesportsdb.com/images/media/team/badge/uyhbfe1612467038.png",
     "Aston Villa": "https://r2.thesportsdb.com/images/media/team/badge/jykrpv1717309891.png",
     "AFC Bournemouth": "https://r2.thesportsdb.com/images/media/team/badge/y08nak1534071116.png",
+    "Bournemouth": "https://r2.thesportsdb.com/images/media/team/badge/y08nak1534071116.png",
     "Brentford": "https://r2.thesportsdb.com/images/media/team/badge/grv1aw1546453779.png",
     "Brighton & Hove Albion": "https://r2.thesportsdb.com/images/media/team/badge/ywypts1448810904.png",
+    "Brighton": "https://r2.thesportsdb.com/images/media/team/badge/ywypts1448810904.png",
     "Burnley": "https://r2.thesportsdb.com/images/media/team/badge/ql7nl31686893820.png",
     "Chelsea": "https://r2.thesportsdb.com/images/media/team/badge/yvwvtu1448813215.png",
     "Crystal Palace": "https://r2.thesportsdb.com/images/media/team/badge/ia6i3m1656014992.png",
@@ -99,20 +101,24 @@ const teamLogos = {
     "Leeds United": "https://r2.thesportsdb.com/images/media/team/badge/g0eqzw1598804097.png",
     "Liverpool": "https://r2.thesportsdb.com/images/media/team/badge/kfaher1737969724.png",
     "Manchester City": "https://r2.thesportsdb.com/images/media/team/badge/vwpvry1467462651.png",
+    "Man City": "https://r2.thesportsdb.com/images/media/team/badge/vwpvry1467462651.png",
     "Manchester United": "https://r2.thesportsdb.com/images/media/team/badge/xzqdr11517660252.png",
+    "Man Utd": "https://r2.thesportsdb.com/images/media/team/badge/xzqdr11517660252.png",
     "Newcastle United": "https://r2.thesportsdb.com/images/media/team/badge/lhwuiz1621593302.png",
+    "Newcastle": "https://r2.thesportsdb.com/images/media/team/badge/lhwuiz1621593302.png",
     "Nottingham Forest": "https://r2.thesportsdb.com/images/media/team/badge/bk4qjs1546440351.png",
     "Sunderland": "https://r2.thesportsdb.com/images/media/team/badge/tprtus1448813498.png",
     "Tottenham Hotspur": "https://r2.thesportsdb.com/images/media/team/badge/dfyfhl1604094109.png",
+    "Tottenham": "https://r2.thesportsdb.com/images/media/team/badge/dfyfhl1604094109.png",
     "West Ham United": "https://r2.thesportsdb.com/images/media/team/badge/yutyxs1467459956.png",
-    "Wolverhampton Wanderers": "https://r2.thesportsdb.com/images/media/team/badge/u9qr031621593327.png"
+    "West Ham": "https://r2.thesportsdb.com/images/media/team/badge/yutyxs1467459956.png",
+    "Wolverhampton Wanderers": "https://r2.thesportsdb.com/images/media/team/badge/u9qr031621593327.png",
+    "Wolves": "https://r2.thesportsdb.com/images/media/team/badge/u9qr031621593327.png"
 };
 
-const getLogoUrl = (teamName) => {
-    const key = Object.keys(teamLogos).find(k => teamName.includes(k.split(" ")[0]));
-    return teamLogos[key] || `https://placehold.co/96x96/eee/ccc?text=${teamName.substring(0,3).toUpperCase()}`;
+const getLogoUrl = (apiTeamName) => {
+    return teamLogos[apiTeamName] || `https://placehold.co/96x96/eee/ccc?text=${apiTeamName.substring(0,3).toUpperCase()}`;
 };
-
 
 // --- Helper Function for Scoring ---
 const calculatePoints = (prediction, actualScore) => {
@@ -334,7 +340,7 @@ app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     else res.status(500).json(result);
 });
 
-// --- TheSportsDB API Seeding Logic ---
+// --- TheSportsDB API Seeding Logic (FINAL INTELLIGENT VERSION) ---
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
@@ -398,13 +404,15 @@ const seedFixturesFromAPI = async () => {
 
 const repairMissingLogos = async () => {
     try {
-        console.log("Checking for fixtures with incorrect or missing logos...");
+        console.log("Checking for fixtures with missing or placeholder logos...");
         const fixturesToRepair = await Fixture.find({ 
             $or: [ 
                 { homeLogo: { $exists: false } },
                 { awayLogo: { $exists: false } },
                 { homeLogo: "" },
-                { awayLogo: "" }
+                { awayLogo: "" },
+                { homeLogo: { $regex: /placehold\.co/ } },
+                { awayLogo: { $regex: /placehold\.co/ } }
             ]
         });
 
@@ -454,3 +462,4 @@ mongoose.connect(process.env.DATABASE_URL)
         console.error('Error connecting to MongoDB Atlas:', error);
         console.error(error);
     });
+
