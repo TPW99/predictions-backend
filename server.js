@@ -128,6 +128,7 @@ const getLogoUrl = (apiTeamName) => {
     return teamLogos[apiTeamName] || `https://placehold.co/96x96/eee/ccc?text=${apiTeamName.substring(0,3).toUpperCase()}`;
 };
 
+
 // --- Helper Function for Scoring ---
 const calculatePoints = (prediction, actualScore) => {
     const predHome = Number(prediction.homeScore);
@@ -190,7 +191,7 @@ const runScoringProcess = async () => {
         for (const user of allUsers) {
             const gameweekScoresMap = new Map(user.gameweekScores.map(gs => [gs.gameweek, gs]));
             
-            const pointsByGameweek = {};
+            const pointsByGameweek = new Map();
             for (const prediction of user.predictions) {
                 const fixture = prediction.fixtureId;
                 if (fixture && fixture.actualScore && fixture.actualScore.home !== null) {
@@ -198,15 +199,16 @@ const runScoringProcess = async () => {
                     if (fixture.isDerby) points *= 2;
                     if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
                     
-                    pointsByGameweek[fixture.gameweek] = (pointsByGameweek[fixture.gameweek] || 0) + points;
+                    const gw = fixture.gameweek;
+                    const currentPoints = pointsByGameweek.get(gw) || 0;
+                    pointsByGameweek.set(gw, currentPoints + points);
                 }
             }
 
-            for (const gw in pointsByGameweek) {
-                const gameweekNum = parseInt(gw);
-                const summary = gameweekScoresMap.get(gameweekNum) || { gameweek: gameweekNum, points: 0, penalty: 0 };
-                summary.points = pointsByGameweek[gw];
-                gameweekScoresMap.set(gameweekNum, summary);
+            for (const [gameweek, points] of pointsByGameweek.entries()) {
+                const summary = gameweekScoresMap.get(gameweek) || { gameweek, points: 0, penalty: 0 };
+                summary.points = points;
+                gameweekScoresMap.set(gameweek, summary);
             }
             
             user.gameweekScores = Array.from(gameweekScoresMap.values());
@@ -395,59 +397,53 @@ const seedFixturesFromAPI = async () => {
             console.log("TheSportsDB API key not found. Skipping seeding.");
             return;
         }
-        
-        const lastFixture = await Fixture.findOne().sort({ gameweek: -1 });
-        const lastKnownGameweek = lastFixture ? lastFixture.gameweek : 0;
-        const gameweekToFetch = lastKnownGameweek + 1;
 
-        if (gameweekToFetch > 38) {
-            console.log("All 38 gameweeks seem to be in the database.");
-            return;
-        }
+        const seasonStartDate = new Date('2025-08-15T00:00:00Z');
+        const now = new Date();
+        const weekInMillis = 7 * 24 * 60 * 60 * 1000;
+        let realCurrentGameweek = Math.floor((now - seasonStartDate) / weekInMillis) + 1;
+        if (realCurrentGameweek < 1) realCurrentGameweek = 1;
+        if (realCurrentGameweek > 38) realCurrentGameweek = 38;
 
-        console.log(`Checking API for fixtures for Gameweek ${gameweekToFetch}...`);
-        
-        const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gameweekToFetch}&s=2025-2026`;
-        
-        const response = await axios.get(url);
-        const events = response.data.events;
+        const existingGameweeks = await Fixture.distinct('gameweek');
 
-        if (!events || events.length === 0) {
-            console.log(`API returned no fixtures for Gameweek ${gameweekToFetch}.`);
-            return;
-        }
+        for (let gw = 1; gw <= realCurrentGameweek; gw++) {
+            if (existingGameweeks.includes(gw)) {
+                console.log(`Gameweek ${gw} already in DB. Skipping.`);
+                continue;
+            }
 
-        console.log(`Found ${events.length} new fixtures for Gameweek ${gameweekToFetch}.`);
+            console.log(`Checking API for missing fixtures for Gameweek ${gw}...`);
+            
+            const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
+            
+            const response = await axios.get(url);
+            const events = response.data.events;
 
-        const fixturesToSave = await Promise.all(events.map(async (event) => {
-            let homeLogo = '', awayLogo = '';
-            try {
-                const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
-                homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
-            } catch (e) { console.error(`Could not fetch home logo for ${event.strHomeTeam}`)}
+            if (!events || events.length === 0) {
+                console.log(`API returned no fixtures for Gameweek ${gw}.`);
+                continue;
+            }
 
-            try {
-                const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
-                awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
-            } catch (e) { console.error(`Could not fetch away logo for ${event.strAwayTeam}`)}
+            console.log(`Found ${events.length} new fixtures for Gameweek ${gw}.`);
 
-            return {
+            const fixturesToSave = events.map(event => ({
                 theSportsDbId: event.idEvent,
                 gameweek: parseInt(event.intRound),
                 homeTeam: event.strHomeTeam,
                 awayTeam: event.strAwayTeam,
-                homeLogo: homeLogo,
-                awayLogo: awayLogo,
+                homeLogo: getLogoUrl(event.strHomeTeam),
+                awayLogo: getLogoUrl(event.strAwayTeam),
                 homeTeamId: event.idHomeTeam,
                 awayTeamId: event.idAwayTeam,
                 kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
                 isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
-            };
-        }));
-        
-        if (fixturesToSave.length > 0) {
-            await Fixture.insertMany(fixturesToSave);
-            console.log(`Successfully added Gameweek ${gameweekToFetch} fixtures to the database!`);
+            }));
+            
+            if (fixturesToSave.length > 0) {
+                await Fixture.insertMany(fixturesToSave);
+                console.log(`Successfully added Gameweek ${gw} fixtures to the database!`);
+            }
         }
 
     } catch (error) {
@@ -457,7 +453,7 @@ const seedFixturesFromAPI = async () => {
 
 const repairMissingLogos = async () => {
     try {
-        console.log("Checking for fixtures with missing or placeholder logos...");
+        console.log("Checking for fixtures with missing or incorrect logos...");
         const fixturesToRepair = await Fixture.find({ 
             $or: [ 
                 { homeLogo: { $exists: false } }, { awayLogo: { $exists: false } },
@@ -514,5 +510,6 @@ mongoose.connect(process.env.DATABASE_URL)
     })
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
+        console.error(error);
     });
 
