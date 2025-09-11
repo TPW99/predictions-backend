@@ -189,6 +189,9 @@ const runScoringProcess = async () => {
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
         for (const user of allUsers) {
+            if (!user.gameweekScores) { // Check if the array exists
+                user.gameweekScores = [];
+            }
             const gameweekScoresMap = new Map(user.gameweekScores.map(gs => [gs.gameweek, gs]));
             
             const pointsByGameweek = new Map();
@@ -340,6 +343,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
             const fixture = await Fixture.findById(firstFixtureId);
             if (fixture) {
                 const gameweek = fixture.gameweek;
+                if (!user.gameweekScores) user.gameweekScores = [];
                 let gwSummary = user.gameweekScores.find(gs => gs.gameweek === gameweek);
                 if (gwSummary) {
                     gwSummary.penalty = 3;
@@ -382,6 +386,7 @@ app.get('/api/summary/:gameweek', authenticateToken, async (req, res) => {
     try {
         const gameweek = parseInt(req.params.gameweek);
         const user = await User.findById(req.user.userId);
+        if (!user.gameweekScores) user.gameweekScores = [];
         const summary = user.gameweekScores.find(gs => gs.gameweek === gameweek);
         res.json(summary || { gameweek, points: 0, penalty: 0 });
     } catch (error) {
