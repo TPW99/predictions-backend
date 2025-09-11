@@ -189,7 +189,7 @@ const runScoringProcess = async () => {
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
         for (const user of allUsers) {
-            if (!user.gameweekScores) { // Check if the array exists
+            if (!user.gameweekScores) {
                 user.gameweekScores = [];
             }
             const gameweekScoresMap = new Map(user.gameweekScores.map(gs => [gs.gameweek, gs]));
