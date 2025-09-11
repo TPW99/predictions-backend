@@ -524,5 +524,4 @@ mongoose.connect(process.env.DATABASE_URL)
     })
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
-        console.error(error);
     });
