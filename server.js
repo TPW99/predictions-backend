@@ -189,7 +189,7 @@ const runScoringProcess = async () => {
         const allUsers = await User.find({}).populate('predictions.fixtureId');
 
         for (const user of allUsers) {
-            if (!user.gameweekScores) {
+            if (!user.gameweekScores) { // Check if the array exists
                 user.gameweekScores = [];
             }
             const gameweekScoresMap = new Map(user.gameweekScores.map(gs => [gs.gameweek, gs]));
@@ -529,6 +529,4 @@ mongoose.connect(process.env.DATABASE_URL)
     })
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
-        console.error(error);
     });
-
