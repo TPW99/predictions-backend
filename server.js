@@ -451,7 +451,7 @@ app.post('/api/admin/update-score', authenticateToken, async (req, res) => {
     }
 });
 
-// --- TheSportsDB API Seeding Logic ---
+// --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
@@ -489,17 +489,40 @@ const seedFixturesFromAPI = async () => {
 
             console.log(`Found ${events.length} new fixtures for Gameweek ${gw}.`);
 
-            const fixturesToSave = events.map(event => ({
-                theSportsDbId: event.idEvent,
-                gameweek: parseInt(event.intRound),
-                homeTeam: event.strHomeTeam,
-                awayTeam: event.strAwayTeam,
-                homeLogo: getLogoUrl(event.strHomeTeam),
-                awayLogo: getLogoUrl(event.strAwayTeam),
-                homeTeamId: event.idHomeTeam,
-                awayTeamId: event.idAwayTeam,
-                kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
-                isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
+            const fixturesToSave = await Promise.all(events.map(async (event) => {
+                let homeLogo = '', awayLogo = '';
+                try {
+                    const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
+                    homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
+                } catch (e) { console.error(`Could not fetch home logo for ${event.strHomeTeam}`)}
+
+                try {
+                    const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
+                    awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
+                } catch (e) { console.error(`Could not fetch away logo for ${event.strAwayTeam}`)}
+
+                const home = event.strHomeTeam;
+                const away = event.strAwayTeam;
+                const isDerby = (home.includes("Man") && away.includes("Man")) || 
+                                (home.includes("Liverpool") && away.includes("Everton")) ||
+                                (away.includes("Liverpool") && home.includes("Everton")) ||
+                                (home.includes("Arsenal") && away.includes("Tottenham")) ||
+                                (away.includes("Arsenal") && home.includes("Tottenham")) ||
+                                (home.includes("Newcastle") && away.includes("Sunderland")) ||
+                                (away.includes("Newcastle") && home.includes("Sunderland"));
+
+                return {
+                    theSportsDbId: event.idEvent,
+                    gameweek: parseInt(event.intRound),
+                    homeTeam: event.strHomeTeam,
+                    awayTeam: event.strAwayTeam,
+                    homeLogo: homeLogo,
+                    awayLogo: awayLogo,
+                    homeTeamId: event.idHomeTeam,
+                    awayTeamId: event.idAwayTeam,
+                    kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
+                    isDerby: isDerby,
+                };
             }));
             
             if (fixturesToSave.length > 0) {
@@ -512,6 +535,7 @@ const seedFixturesFromAPI = async () => {
         console.error('Error during API seeding process:', error);
     }
 };
+
 
 const repairMissingLogos = async () => {
     try {
