@@ -457,8 +457,25 @@ app.post('/api/admin/update-score', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to update score.'});
     }
 });
+app.post('/api/admin/update-fixture', authenticateToken, async (req, res) => {
+    try {
+        const { fixtureId, newDate, newTime } = req.body;
+        if (!fixtureId || !newDate || !newTime) {
+            return res.status(400).json({ message: 'Fixture ID, new date, and new time are required.' });
+        }
+        const newKickoffTime = new Date(`${newDate}T${newTime}Z`);
+        if (isNaN(newKickoffTime)) {
+            return res.status(400).json({ message: 'Invalid date or time format.' });
+        }
+        await Fixture.findByIdAndUpdate(fixtureId, { $set: { kickoffTime: newKickoffTime } });
+        res.status(200).json({ success: true, message: 'Fixture updated successfully.' });
+    } catch (error) {
+        console.error("Error updating fixture:", error);
+        res.status(500).json({ success: false, message: 'Failed to update fixture.' });
+    }
+});
 
-// --- TheSportsDB API Seeding Logic (Additive and Intelligent) ---
+// --- TheSportsDB API Seeding Logic (FINAL INTELLIGENT VERSION) ---
 const seedFixturesFromAPI = async () => {
     try {
         const apiKey = process.env.THESPORTSDB_API_KEY;
@@ -474,39 +491,32 @@ const seedFixturesFromAPI = async () => {
         if (realCurrentGameweek < 1) realCurrentGameweek = 1;
         if (realCurrentGameweek > 38) realCurrentGameweek = 38;
 
-        const existingGameweeks = await Fixture.distinct('gameweek');
-
         for (let gw = 1; gw <= realCurrentGameweek; gw++) {
-            if (existingGameweeks.includes(gw)) {
-                console.log(`Gameweek ${gw} already in DB. Skipping.`);
-                continue;
+            const gwExists = await Fixture.exists({ gameweek: gw });
+            if (gwExists) {
+                console.log(`Gameweek ${gw} already in DB. Syncing kickoff times...`);
+            } else {
+                console.log(`Checking API for missing fixtures for Gameweek ${gw}...`);
             }
-
-            console.log(`Checking API for missing fixtures for Gameweek ${gw}...`);
             
             const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
-            
             const response = await axios.get(url);
-            const events = response.data.events;
+            const apiFixtures = response.data.events;
 
-            if (!events || events.length === 0) {
+            if (!apiFixtures || apiFixtures.length === 0) {
                 console.log(`API returned no fixtures for Gameweek ${gw}.`);
                 continue;
             }
 
-            console.log(`Found ${events.length} new fixtures for Gameweek ${gw}.`);
+            const dbFixtures = await Fixture.find({ gameweek: gw });
+            const dbFixturesMap = new Map(dbFixtures.map(f => [f.theSportsDbId, f]));
 
-            const fixturesToSave = await Promise.all(events.map(async (event) => {
-                let homeLogo = '', awayLogo = '';
-                try {
-                    const homeTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idHomeTeam}`);
-                    homeLogo = homeTeamDetails.data.teams[0].strTeamBadge || '';
-                } catch (e) { console.error(`Could not fetch home logo for ${event.strHomeTeam}`)}
+            const fixturesToAdd = [];
+            const fixturesToUpdate = [];
 
-                try {
-                    const awayTeamDetails = await axios.get(`https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupteam.php?id=${event.idAwayTeam}`);
-                    awayLogo = awayTeamDetails.data.teams[0].strTeamBadge || '';
-                } catch (e) { console.error(`Could not fetch away logo for ${event.strAwayTeam}`)}
+            for (const event of apiFixtures) {
+                const existingFixture = dbFixturesMap.get(event.idEvent);
+                const kickoffTime = new Date(`${event.dateEvent}T${event.strTime}Z`);
 
                 const home = event.strHomeTeam;
                 const away = event.strAwayTeam;
@@ -518,31 +528,46 @@ const seedFixturesFromAPI = async () => {
                                 (home.includes("Newcastle") && away.includes("Sunderland")) ||
                                 (away.includes("Newcastle") && home.includes("Sunderland"));
 
-                return {
-                    theSportsDbId: event.idEvent,
-                    gameweek: parseInt(event.intRound),
-                    homeTeam: event.strHomeTeam,
-                    awayTeam: event.strAwayTeam,
-                    homeLogo: homeLogo,
-                    awayLogo: awayLogo,
-                    homeTeamId: event.idHomeTeam,
-                    awayTeamId: event.idAwayTeam,
-                    kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
-                    isDerby: isDerby,
-                };
-            }));
+                if (!existingFixture) {
+                    fixturesToAdd.push({
+                        theSportsDbId: event.idEvent,
+                        gameweek: parseInt(event.intRound),
+                        homeTeam: event.strHomeTeam,
+                        awayTeam: event.strAwayTeam,
+                        homeLogo: getLogoUrl(event.strHomeTeam),
+                        awayLogo: getLogoUrl(event.strAwayTeam),
+                        homeTeamId: event.idHomeTeam,
+                        awayTeamId: event.idAwayTeam,
+                        kickoffTime: kickoffTime,
+                        isDerby: isDerby
+                    });
+                } else if (existingFixture.kickoffTime.getTime() !== kickoffTime.getTime()) {
+                    fixturesToUpdate.push({
+                        updateOne: {
+                            filter: { _id: existingFixture._id },
+                            update: { $set: { kickoffTime: kickoffTime, isDerby: isDerby } } // Also update derby status
+                        }
+                    });
+                }
+            }
             
-            if (fixturesToSave.length > 0) {
-                await Fixture.insertMany(fixturesToSave);
-                console.log(`Successfully added Gameweek ${gw} fixtures to the database!`);
+            if (fixturesToAdd.length > 0) {
+                await Fixture.insertMany(fixturesToAdd);
+                console.log(`Successfully added ${fixturesToAdd.length} new fixtures for Gameweek ${gw}!`);
+            }
+            if (fixturesToUpdate.length > 0) {
+                await Fixture.bulkWrite(fixturesToUpdate);
+                console.log(`Successfully updated ${fixturesToUpdate.length} fixtures for Gameweek ${gw}!`);
+            }
+            if(fixturesToAdd.length === 0 && fixturesToUpdate.length === 0){
+                console.log(`Gameweek ${gw} is already up to date.`);
             }
         }
 
     } catch (error) {
-        console.error('Error during API seeding process:', error);
+        console.error('Error during API seeding/syncing process:', error);
     }
 };
-
 
 const repairMissingLogos = async () => {
     try {
