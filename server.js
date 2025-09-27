@@ -214,16 +214,9 @@ const runScoringProcess = async () => {
                 gameweekScoresMap.set(gameweek, summary);
             }
             
-            const newGameweekScores = Array.from(gameweekScoresMap.values());
-            const newTotalScore = newGameweekScores.reduce((acc, curr) => acc + curr.points - curr.penalty, 0);
-            
-            await User.updateOne(
-                { _id: user._id },
-                { $set: { 
-                    gameweekScores: newGameweekScores,
-                    score: newTotalScore 
-                }}
-            );
+            user.gameweekScores = Array.from(gameweekScoresMap.values());
+            user.score = user.gameweekScores.reduce((acc, curr) => acc + curr.points - curr.penalty, 0);
+            await user.save();
         }
 
         console.log(`Scoring complete. All user scores recalculated.`);
@@ -339,88 +332,45 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
     }
 });
 app.post('/api/predictions', authenticateToken, async (req, res) => {
-    const { predictions, jokerFixtureId } = req.body;
+    const { predictions, jokerFixtureId, submissionTime, deadline } = req.body;
     const userId = req.user.userId;
-
     try {
         const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ message: 'User not found.' });
-        }
+        if (!user) return res.status(404).json({ message: 'User not found.' });
 
-        const predictionsToUpdate = [];
-        const predictionsToAdd = [];
-        const predictionIdsToRemove = [];
+        if (submissionTime && deadline && new Date(submissionTime) > new Date(deadline)) {
+            const firstFixtureId = Object.keys(predictions)[0];
+            const fixture = await Fixture.findById(firstFixtureId);
+            if (fixture) {
+                const gameweek = fixture.gameweek;
+                if (!user.gameweekScores) user.gameweekScores = [];
+                let gwSummary = user.gameweekScores.find(gs => gs.gameweek === gameweek);
+                if (gwSummary) {
+                    gwSummary.penalty = 3;
+                } else {
+                    user.gameweekScores.push({ gameweek, points: 0, penalty: 3 });
+                }
+            }
+        }
 
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            const homeScore = predictionData.homeScore;
-            const awayScore = predictionData.awayScore;
-
-            const homeScoreNum = Number(homeScore);
-            const awayScoreNum = Number(awayScore);
-
-            const existingPrediction = user.predictions.find(p => p.fixtureId.toString() === fixtureId);
-
-            if (homeScore === '' || awayScore === '' || isNaN(homeScoreNum) || isNaN(awayScoreNum)) {
-                if (existingPrediction) {
-                    predictionIdsToRemove.push(existingPrediction._id);
-                }
-            } else {
-                if (existingPrediction) {
-                    predictionsToUpdate.push({
-                        updateOne: {
-                            filter: { _id: user._id, 'predictions._id': existingPrediction._id },
-                            update: { $set: { 
-                                'predictions.$.homeScore': homeScoreNum, 
-                                'predictions.$.awayScore': awayScoreNum 
-                            }}
-                        }
-                    });
+            if (predictionData.homeScore !== '' && predictionData.awayScore !== '') {
+                const existingIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
+                if (existingIndex > -1) {
+                    user.predictions[existingIndex].homeScore = predictionData.homeScore;
+                    user.predictions[existingIndex].awayScore = predictionData.awayScore;
+                    user.predictions[existingIndex].submittedAt = new Date();
                 } else {
-                    predictionsToAdd.push({
-                        fixtureId,
-                        homeScore: homeScoreNum,
-                        awayScore: awayScoreNum
-                    });
+                    user.predictions.push({ ...predictionData, fixtureId, submittedAt: new Date() });
                 }
             }
         }
         
-        const bulkOps = [...predictionsToUpdate];
-        if (predictionIdsToRemove.length > 0) {
-            bulkOps.push({
-                updateOne: {
-                    filter: { _id: user._id },
-                    update: { $pull: { predictions: { _id: { $in: predictionIdsToRemove } } } }
-                }
-            });
-        }
-        if (predictionsToAdd.length > 0) {
-             bulkOps.push({
-                updateOne: {
-                    filter: { _id: user._id },
-                    update: { $push: { predictions: { $each: predictionsToAdd } } }
-                }
-            });
-        }
-        
-        if (jokerFixtureId !== undefined) {
-             bulkOps.push({
-                updateOne: {
-                    filter: { _id: user._id },
-                    update: { $set: { 
-                        'chips.jokerFixtureId': jokerFixtureId,
-                        'chips.jokerUsedInSeason': jokerFixtureId ? true : user.chips.jokerUsedInSeason
-                    }}
-                }
-            });
-        }
-        
-        if (bulkOps.length > 0) {
-            await User.bulkWrite(bulkOps);
-        }
+        user.chips.jokerFixtureId = jokerFixtureId;
+        if (jokerFixtureId) user.chips.jokerUsedInSeason = true;
 
+        await user.save();
         res.status(200).json({ success: true, message: 'Predictions saved.' });
     } catch (error) {
         console.error("Error saving predictions:", error);
@@ -491,66 +441,87 @@ const seedFixturesFromAPI = async () => {
         if (realCurrentGameweek < 1) realCurrentGameweek = 1;
         if (realCurrentGameweek > 38) realCurrentGameweek = 38;
 
+        const existingGameweeks = await Fixture.distinct('gameweek');
+
         for (let gw = 1; gw <= realCurrentGameweek; gw++) {
-            const gwExists = await Fixture.exists({ gameweek: gw });
+            if (existingGameweeks.includes(gw)) {
+                console.log(`Gameweek ${gw} already in DB. Skipping.`);
+                continue;
+            }
 
+            console.log(`Checking API for missing fixtures for Gameweek ${gw}...`);
+            
             const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
+            
             const response = await axios.get(url);
-            const apiFixtures = response.data.events;
+            const events = response.data.events;
 
-            if (!apiFixtures || apiFixtures.length === 0) {
+            if (!events || events.length === 0) {
                 console.log(`API returned no fixtures for Gameweek ${gw}.`);
                 continue;
             }
 
-            const dbFixtures = await Fixture.find({ gameweek: gw });
-            const dbFixturesMap = new Map(dbFixtures.map(f => [f.theSportsDbId, f]));
+            console.log(`Found ${events.length} new fixtures for Gameweek ${gw}.`);
 
-            const fixturesToAdd = [];
-            const fixturesToUpdate = [];
-
-            for (const event of apiFixtures) {
-                const existingFixture = dbFixturesMap.get(event.idEvent);
-                const kickoffTime = new Date(`${event.dateEvent}T${event.strTime}Z`);
-
-                if (!existingFixture) {
-                    fixturesToAdd.push({
-                        theSportsDbId: event.idEvent,
-                        gameweek: parseInt(event.intRound),
-                        homeTeam: event.strHomeTeam,
-                        awayTeam: event.strAwayTeam,
-                        homeLogo: getLogoUrl(event.strHomeTeam),
-                        awayLogo: getLogoUrl(event.strAwayTeam),
-                        homeTeamId: event.idHomeTeam,
-                        awayTeamId: event.idAwayTeam,
-                        kickoffTime: kickoffTime,
-                        isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
-                    });
-                } else if (existingFixture.kickoffTime.getTime() !== kickoffTime.getTime()) {
-                    fixturesToUpdate.push({
-                        updateOne: {
-                            filter: { _id: existingFixture._id },
-                            update: { $set: { kickoffTime: kickoffTime } }
-                        }
-                    });
-                }
-            }
+            const fixturesToSave = events.map(event => ({
+                theSportsDbId: event.idEvent,
+                gameweek: parseInt(event.intRound),
+                homeTeam: event.strHomeTeam,
+                awayTeam: event.strAwayTeam,
+                homeLogo: getLogoUrl(event.strHomeTeam),
+                awayLogo: getLogoUrl(event.strAwayTeam),
+                homeTeamId: event.idHomeTeam,
+                awayTeamId: event.idAwayTeam,
+                kickoffTime: new Date(`${event.dateEvent}T${event.strTime}`),
+                isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
+            }));
             
-            if (fixturesToAdd.length > 0) {
-                await Fixture.insertMany(fixturesToAdd);
-                console.log(`Successfully added ${fixturesToAdd.length} new fixtures for Gameweek ${gw}!`);
-            }
-            if (fixturesToUpdate.length > 0) {
-                await Fixture.bulkWrite(fixturesToUpdate);
-                console.log(`Successfully updated ${fixturesToUpdate.length} fixtures for Gameweek ${gw}!`);
-            }
-            if(fixturesToAdd.length === 0 && fixturesToUpdate.length === 0){
-                console.log(`Gameweek ${gw} is already up to date.`);
+            if (fixturesToSave.length > 0) {
+                await Fixture.insertMany(fixturesToSave);
+                console.log(`Successfully added Gameweek ${gw} fixtures to the database!`);
             }
         }
 
     } catch (error) {
-        console.error('Error during API seeding/syncing process:', error);
+        console.error('Error during API seeding process:', error);
+    }
+};
+
+const repairMissingLogos = async () => {
+    try {
+        console.log("Checking for fixtures with missing or incorrect logos...");
+        const fixturesToRepair = await Fixture.find({ 
+            $or: [ 
+                { homeLogo: { $exists: false } }, { awayLogo: { $exists: false } },
+                { homeLogo: "" }, { awayLogo: "" },
+                { homeLogo: { $regex: /placehold\.co/ } }, { awayLogo: { $regex: /placehold\.co/ } },
+                { homeLogo: { $regex: /ssl\.gstatic\.com/ } }, { awayLogo: { $regex: /ssl\.gstatic\.com/ } }
+            ]
+        });
+
+        if (fixturesToRepair.length === 0) {
+            console.log("No logos need repairing.");
+            return;
+        }
+
+        console.log(`Found ${fixturesToRepair.length} fixtures to repair...`);
+        const bulkUpdateOps = fixturesToRepair.map(fixture => ({
+            updateOne: {
+                filter: { _id: fixture._id },
+                update: { $set: { 
+                    homeLogo: getLogoUrl(fixture.homeTeam),
+                    awayLogo: getLogoUrl(fixture.awayTeam)
+                }}
+            }
+        }));
+
+        if (bulkUpdateOps.length > 0) {
+            await Fixture.bulkWrite(bulkUpdateOps);
+            console.log("Successfully repaired missing logos.");
+        }
+
+    } catch (error) {
+        console.error("Error repairing missing logos:", error);
     }
 };
 
