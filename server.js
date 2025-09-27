@@ -493,12 +493,7 @@ const seedFixturesFromAPI = async () => {
 
         for (let gw = 1; gw <= realCurrentGameweek; gw++) {
             const gwExists = await Fixture.exists({ gameweek: gw });
-            if (gwExists) {
-                console.log(`Gameweek ${gw} already in DB. Syncing kickoff times...`);
-            } else {
-                console.log(`Checking API for missing fixtures for Gameweek ${gw}...`);
-            }
-            
+
             const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
             const response = await axios.get(url);
             const apiFixtures = response.data.events;
@@ -518,16 +513,6 @@ const seedFixturesFromAPI = async () => {
                 const existingFixture = dbFixturesMap.get(event.idEvent);
                 const kickoffTime = new Date(`${event.dateEvent}T${event.strTime}Z`);
 
-                const home = event.strHomeTeam;
-                const away = event.strAwayTeam;
-                const isDerby = (home.includes("Man") && away.includes("Man")) || 
-                                (home.includes("Liverpool") && away.includes("Everton")) ||
-                                (away.includes("Liverpool") && home.includes("Everton")) ||
-                                (home.includes("Arsenal") && away.includes("Tottenham")) ||
-                                (away.includes("Arsenal") && home.includes("Tottenham")) ||
-                                (home.includes("Newcastle") && away.includes("Sunderland")) ||
-                                (away.includes("Newcastle") && home.includes("Sunderland"));
-
                 if (!existingFixture) {
                     fixturesToAdd.push({
                         theSportsDbId: event.idEvent,
@@ -539,13 +524,13 @@ const seedFixturesFromAPI = async () => {
                         homeTeamId: event.idHomeTeam,
                         awayTeamId: event.idAwayTeam,
                         kickoffTime: kickoffTime,
-                        isDerby: isDerby
+                        isDerby: (event.strHomeTeam.includes("Man") && event.strAwayTeam.includes("Man")) || (event.strHomeTeam.includes("Liverpool") && event.strAwayTeam.includes("Everton")),
                     });
                 } else if (existingFixture.kickoffTime.getTime() !== kickoffTime.getTime()) {
                     fixturesToUpdate.push({
                         updateOne: {
                             filter: { _id: existingFixture._id },
-                            update: { $set: { kickoffTime: kickoffTime, isDerby: isDerby } } // Also update derby status
+                            update: { $set: { kickoffTime: kickoffTime } }
                         }
                     });
                 }
@@ -566,44 +551,6 @@ const seedFixturesFromAPI = async () => {
 
     } catch (error) {
         console.error('Error during API seeding/syncing process:', error);
-    }
-};
-
-const repairMissingLogos = async () => {
-    try {
-        console.log("Checking for fixtures with missing or incorrect logos...");
-        const fixturesToRepair = await Fixture.find({ 
-            $or: [ 
-                { homeLogo: { $exists: false } }, { awayLogo: { $exists: false } },
-                { homeLogo: "" }, { awayLogo: "" },
-                { homeLogo: { $regex: /placehold\.co/ } }, { awayLogo: { $regex: /placehold\.co/ } },
-                { homeLogo: { $regex: /ssl\.gstatic\.com/ } }, { awayLogo: { $regex: /ssl\.gstatic\.com/ } }
-            ]
-        });
-
-        if (fixturesToRepair.length === 0) {
-            console.log("No logos need repairing.");
-            return;
-        }
-
-        console.log(`Found ${fixturesToRepair.length} fixtures to repair...`);
-        const bulkUpdateOps = fixturesToRepair.map(fixture => ({
-            updateOne: {
-                filter: { _id: fixture._id },
-                update: { $set: { 
-                    homeLogo: getLogoUrl(fixture.homeTeam),
-                    awayLogo: getLogoUrl(fixture.awayTeam)
-                }}
-            }
-        }));
-
-        if (bulkUpdateOps.length > 0) {
-            await Fixture.bulkWrite(bulkUpdateOps);
-            console.log("Successfully repaired missing logos.");
-        }
-
-    } catch (error) {
-        console.error("Error repairing missing logos:", error);
     }
 };
 
