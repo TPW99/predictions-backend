@@ -214,9 +214,16 @@ const runScoringProcess = async () => {
                 gameweekScoresMap.set(gameweek, summary);
             }
             
-            user.gameweekScores = Array.from(gameweekScoresMap.values());
-            user.score = user.gameweekScores.reduce((acc, curr) => acc + curr.points - curr.penalty, 0);
-            await user.save();
+            const newGameweekScores = Array.from(gameweekScoresMap.values());
+            const newTotalScore = newGameweekScores.reduce((acc, curr) => acc + curr.points - curr.penalty, 0);
+            
+            await User.updateOne(
+                { _id: user._id },
+                { $set: { 
+                    gameweekScores: newGameweekScores,
+                    score: newTotalScore 
+                }}
+            );
         }
 
         console.log(`Scoring complete. All user scores recalculated.`);
