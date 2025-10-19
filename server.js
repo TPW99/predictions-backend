@@ -36,6 +36,21 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
+// --- NEW: Admin Authorization Middleware ---
+const authorizeAdmin = async (req, res, next) => {
+    try {
+        const user = await User.findById(req.user.userId);
+        if (user && user.role === 'admin') {
+            next();
+        } else {
+            res.sendStatus(403); // Forbidden
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Error checking admin status.' });
+    }
+};
+
+
 // --- Database Schemas ---
 const ProphecySchema = new mongoose.Schema({
     winner: { type: String, default: '' },
