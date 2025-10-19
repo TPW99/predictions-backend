@@ -143,7 +143,6 @@ const getLogoUrl = (apiTeamName) => {
     return teamLogos[apiTeamName] || `https://placehold.co/96x96/eee/ccc?text=${apiTeamName.substring(0,3).toUpperCase()}`;
 };
 
-
 // --- Helper Function for Scoring ---
 const calculatePoints = (prediction, actualScore) => {
     const predHome = Number(prediction.homeScore);
@@ -162,14 +161,14 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
+        // Temporarily fetch ALL finished fixtures to force a full recalculation
         const fixturesToScore = await Fixture.find({
-            kickoffTime: { $lt: new Date() },
-            'actualScore.home': null
+            kickoffTime: { $lt: new Date() }
         });
 
         if (fixturesToScore.length === 0) {
-            console.log('No new fixtures to score.');
-            return { success: true, message: 'No new fixtures to score.' };
+            console.log('No finished fixtures found to score.');
+            return { success: true, message: 'No fixtures have been played yet.' };
         }
         
         let scoredFixturesCount = 0;
@@ -193,11 +192,6 @@ const runScoringProcess = async () => {
             } catch (e) {
                 console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
-        }
-
-        if (scoredFixturesCount === 0) {
-            console.log('No finished matches found with results on the API yet.');
-            return { success: true, message: 'No results to score yet.' };
         }
 
         console.log(`Recalculating scores for all users...`);
@@ -242,13 +236,14 @@ const runScoringProcess = async () => {
         }
 
         console.log(`Scoring complete. All user scores recalculated.`);
-        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
+        return { success: true, message: `All scores have been recalculated successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
         return { success: false, message: 'An error occurred during scoring.' };
     }
 };
+
 
 // --- API Endpoints ---
 app.post('/api/auth/register', async (req, res) => {
