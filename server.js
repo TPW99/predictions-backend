@@ -161,40 +161,41 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        // Temporarily fetch ALL finished fixtures to force a full recalculation
         const fixturesToScore = await Fixture.find({
-            kickoffTime: { $lt: new Date() }
+            kickoffTime: { $lt: new Date() },
+            'actualScore.home': null
         });
 
         if (fixturesToScore.length === 0) {
-            console.log('No finished fixtures found to score.');
-            return { success: true, message: 'No fixtures have been played yet.' };
+            console.log('No new fixtures to score.');
+            //return { success: true, message: 'No new fixtures to score.' };
         }
         
         let scoredFixturesCount = 0;
         
         for (const fixture of fixturesToScore) {
-            // Only fetch if score is missing
-            if (fixture.actualScore.home === null) {
-                try {
-                    const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
-                    const resultsResponse = await axios.get(resultsUrl);
-                    const result = resultsResponse.data.events && resultsResponse.data.events[0];
+            try {
+                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
+                const resultsResponse = await axios.get(resultsUrl);
+                const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
-                    if (result && result.intHomeScore != null && result.intAwayScore != null) {
-                        await Fixture.updateOne(
-                            { _id: fixture._id },
-                            { $set: {
-                                'actualScore.home': parseInt(result.intHomeScore),
-                                'actualScore.away': parseInt(result.intAwayScore)
-                            }}
-                        );
-                        scoredFixturesCount++;
-                    }
-                } catch (e) {
-                    console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
+                if (result && result.intHomeScore != null && result.intAwayScore != null) {
+                    await Fixture.updateOne(
+                        { _id: fixture._id },
+                        { $set: {
+                            'actualScore.home': parseInt(result.intHomeScore),
+                            'actualScore.away': parseInt(result.intAwayScore)
+                        }}
+                    );
+                    scoredFixturesCount++;
                 }
+            } catch (e) {
+                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
+        }
+
+        if (scoredFixturesCount === 0) {
+            console.log('No finished matches found with results on the API yet. Running full score recalculation...');
         }
 
         console.log(`Recalculating scores for all users...`);
