@@ -351,14 +351,38 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving prophecies.' });
     }
 });
+// FINAL ROBUST PREDICTION SUBMISSION ENDPOINT
 app.post('/api/predictions', authenticateToken, async (req, res) => {
-    const { predictions, jokerFixtureId } = req.body;
+    const { predictions, jokerFixtureId, submissionTime, deadline } = req.body;
     const userId = req.user.userId;
 
     try {
         const user = await User.findById(userId);
         if (!user) {
             return res.status(404).json({ message: 'User not found.' });
+        }
+
+        if (submissionTime && deadline && new Date(submissionTime) > new Date(deadline)) {
+            const firstFixtureId = Object.keys(predictions)[0];
+            if (firstFixtureId) {
+                const fixture = await Fixture.findById(firstFixtureId);
+                if (fixture) {
+                    const gameweek = fixture.gameweek;
+                    if (!user.gameweekScores) user.gameweekScores = [];
+                    let gwSummary = user.gameweekScores.find(gs => gs.gameweek === gameweek);
+                    if (gwSummary) {
+                        await User.updateOne(
+                            { _id: userId, 'gameweekScores.gameweek': gameweek },
+                            { $set: { 'gameweekScores.$.penalty': 3 } }
+                        );
+                    } else {
+                        await User.updateOne(
+                            { _id: userId },
+                            { $push: { gameweekScores: { gameweek, points: 0, penalty: 3 } } }
+                        );
+                    }
+                }
+            }
         }
 
         const predictionsToUpdate = [];
@@ -383,10 +407,11 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
                 if (existingPrediction) {
                     predictionsToUpdate.push({
                         updateOne: {
-                            filter: { _id: user._id, 'predictions._id': existingPrediction._id },
+                            filter: { _id: userId, 'predictions._id': existingPrediction._id },
                             update: { $set: { 
                                 'predictions.$.homeScore': homeScoreNum, 
-                                'predictions.$.awayScore': awayScoreNum 
+                                'predictions.$.awayScore': awayScoreNum,
+                                'predictions.$.submittedAt': new Date()
                             }}
                         }
                     });
@@ -394,7 +419,8 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
                     predictionsToAdd.push({
                         fixtureId,
                         homeScore: homeScoreNum,
-                        awayScore: awayScoreNum
+                        awayScore: awayScoreNum,
+                        submittedAt: new Date()
                     });
                 }
             }
@@ -404,7 +430,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         if (predictionIdsToRemove.length > 0) {
             bulkOps.push({
                 updateOne: {
-                    filter: { _id: user._id },
+                    filter: { _id: userId },
                     update: { $pull: { predictions: { _id: { $in: predictionIdsToRemove } } } }
                 }
             });
@@ -412,7 +438,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         if (predictionsToAdd.length > 0) {
              bulkOps.push({
                 updateOne: {
-                    filter: { _id: user._id },
+                    filter: { _id: userId },
                     update: { $push: { predictions: { $each: predictionsToAdd } } }
                 }
             });
@@ -421,7 +447,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         if (jokerFixtureId !== undefined) {
              bulkOps.push({
                 updateOne: {
-                    filter: { _id: user._id },
+                    filter: { _id: userId },
                     update: { $set: { 
                         'chips.jokerFixtureId': jokerFixtureId,
                         'chips.jokerUsedInSeason': jokerFixtureId ? true : user.chips.jokerUsedInSeason
@@ -440,6 +466,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving predictions.' });
     }
 });
+
 app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
     const result = await runScoringProcess();
     if(result.success) res.status(200).json(result);
