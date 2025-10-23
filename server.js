@@ -165,11 +165,6 @@ const runScoringProcess = async () => {
             kickoffTime: { $lt: new Date() },
             'actualScore.home': null
         });
-
-        if (fixturesToScore.length === 0) {
-            console.log('No new fixtures to score.');
-            //return { success: true, message: 'No new fixtures to score.' };
-        }
         
         let scoredFixturesCount = 0;
         
@@ -194,8 +189,10 @@ const runScoringProcess = async () => {
             }
         }
 
-        if (scoredFixturesCount === 0) {
-            console.log('No finished matches found with results on the API yet. Running full score recalculation...');
+        if (scoredFixturesCount > 0) {
+            console.log(`Found and scored ${scoredFixturesCount} new fixtures.`);
+        } else {
+            console.log('No new fixtures to score. Forcing full recalculation...');
         }
 
         console.log(`Recalculating scores for all users...`);
