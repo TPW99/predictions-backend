@@ -356,45 +356,88 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
     }
 });
 app.post('/api/predictions', authenticateToken, async (req, res) => {
-    const { predictions, jokerFixtureId, submissionTime, deadline } = req.body;
+    const { predictions, jokerFixtureId } = req.body;
     const userId = req.user.userId;
+
     try {
         const user = await User.findById(userId);
-        if (!user) return res.status(404).json({ message: 'User not found.' });
-
-        if (submissionTime && deadline && new Date(submissionTime) > new Date(deadline)) {
-            const firstFixtureId = Object.keys(predictions)[0];
-            const fixture = await Fixture.findById(firstFixtureId);
-            if (fixture) {
-                const gameweek = fixture.gameweek;
-                if (!user.gameweekScores) user.gameweekScores = [];
-                let gwSummary = user.gameweekScores.find(gs => gs.gameweek === gameweek);
-                if (gwSummary) {
-                    gwSummary.penalty = 3;
-                } else {
-                    user.gameweekScores.push({ gameweek, points: 0, penalty: 3 });
-                }
-            }
+        if (!user) {
+            return res.status(404).json({ message: 'User not found.' });
         }
+
+        const predictionsToUpdate = [];
+        const predictionsToAdd = [];
+        const predictionIdsToRemove = [];
 
         for (const fixtureId in predictions) {
             const predictionData = predictions[fixtureId];
-            if (predictionData.homeScore !== '' && predictionData.awayScore !== '') {
-                const existingIndex = user.predictions.findIndex(p => p.fixtureId.toString() === fixtureId);
-                if (existingIndex > -1) {
-                    user.predictions[existingIndex].homeScore = predictionData.homeScore;
-                    user.predictions[existingIndex].awayScore = predictionData.awayScore;
-                    user.predictions[existingIndex].submittedAt = new Date();
+            const homeScore = predictionData.homeScore;
+            const awayScore = predictionData.awayScore;
+
+            const homeScoreNum = Number(homeScore);
+            const awayScoreNum = Number(awayScore);
+
+            const existingPrediction = user.predictions.find(p => p.fixtureId.toString() === fixtureId);
+
+            if (homeScore === '' || awayScore === '' || isNaN(homeScoreNum) || isNaN(awayScoreNum)) {
+                if (existingPrediction) {
+                    predictionIdsToRemove.push(existingPrediction._id);
+                }
+            } else {
+                if (existingPrediction) {
+                    predictionsToUpdate.push({
+                        updateOne: {
+                            filter: { _id: user._id, 'predictions._id': existingPrediction._id },
+                            update: { $set: { 
+                                'predictions.$.homeScore': homeScoreNum, 
+                                'predictions.$.awayScore': awayScoreNum 
+                            }}
+                        }
+                    });
                 } else {
-                    user.predictions.push({ ...predictionData, fixtureId, submittedAt: new Date() });
+                    predictionsToAdd.push({
+                        fixtureId,
+                        homeScore: homeScoreNum,
+                        awayScore: awayScoreNum
+                    });
                 }
             }
         }
         
-        user.chips.jokerFixtureId = jokerFixtureId;
-        if (jokerFixtureId) user.chips.jokerUsedInSeason = true;
+        const bulkOps = [...predictionsToUpdate];
+        if (predictionIdsToRemove.length > 0) {
+            bulkOps.push({
+                updateOne: {
+                    filter: { _id: user._id },
+                    update: { $pull: { predictions: { _id: { $in: predictionIdsToRemove } } } }
+                }
+            });
+        }
+        if (predictionsToAdd.length > 0) {
+             bulkOps.push({
+                updateOne: {
+                    filter: { _id: user._id },
+                    update: { $push: { predictions: { $each: predictionsToAdd } } }
+                }
+            });
+        }
+        
+        if (jokerFixtureId !== undefined) {
+             bulkOps.push({
+                updateOne: {
+                    filter: { _id: user._id },
+                    update: { $set: { 
+                        'chips.jokerFixtureId': jokerFixtureId,
+                        'chips.jokerUsedInSeason': jokerFixtureId ? true : user.chips.jokerUsedInSeason
+                    }}
+                }
+            });
+        }
+        
+        if (bulkOps.length > 0) {
+            await User.bulkWrite(bulkOps);
+        }
 
-        await user.save();
         res.status(200).json({ success: true, message: 'Predictions saved.' });
     } catch (error) {
         console.error("Error saving predictions:", error);
