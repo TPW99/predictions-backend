@@ -161,13 +161,16 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
+        // --- THIS IS THE FIX ---
+        // Only fetch scores for fixtures from Gameweek 9 onwards
         const fixturesToScore = await Fixture.find({
             kickoffTime: { $lt: new Date() },
-            'actualScore.home': null
+            'actualScore.home': null,
+            'gameweek': { $gte: 9 } 
         });
 
         if (fixturesToScore.length === 0) {
-            console.log('No new fixtures to score.');
+            console.log('No new fixtures to score from GW9 onwards.');
             return { success: true, message: 'No new fixtures to score.' };
         }
         
