@@ -168,6 +168,7 @@ const runScoringProcess = async () => {
 
         if (fixturesToScore.length === 0) {
             console.log('No new fixtures to score.');
+            return { success: true, message: 'No new fixtures to score.' };
         }
         
         let scoredFixturesCount = 0;
@@ -193,8 +194,9 @@ const runScoringProcess = async () => {
             }
         }
 
-        if (scoredFixturesCount > 0) {
-             console.log(`Found and scored ${scoredFixturesCount} new fixtures.`);
+        if (scoredFixturesCount === 0) {
+            console.log('No finished matches found with results on the API yet.');
+            return { success: true, message: 'No results to score yet.' };
         }
 
         console.log(`Recalculating scores for all users...`);
@@ -244,7 +246,7 @@ const runScoringProcess = async () => {
         }
 
         console.log(`Scoring complete. All user scores recalculated.`);
-        return { success: true, message: `All scores have been recalculated successfully.` };
+        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
