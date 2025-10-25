@@ -36,7 +36,6 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
-// --- NEW: Admin Authorization Middleware ---
 const authorizeAdmin = async (req, res, next) => {
     try {
         const user = await User.findById(req.user.userId);
@@ -49,7 +48,6 @@ const authorizeAdmin = async (req, res, next) => {
         res.status(500).json({ message: 'Error checking admin status.' });
     }
 };
-
 
 // --- Database Schemas ---
 const ProphecySchema = new mongoose.Schema({
@@ -76,6 +74,7 @@ const UserSchema = new mongoose.Schema({
     name: { type: String, required: true },
     email: { type: String, required: true, unique: true, lowercase: true },
     password: { type: String, required: true },
+    role: { type: String, default: 'user' },
     score: { type: Number, default: 0 },
     predictions: [PredictionSchema],
     prophecies: ProphecySchema,
@@ -112,7 +111,7 @@ const teamLogos = {
     "Arsenal": "https://r2.thesportsdb.com/images/media/team/badge/uyhbfe1612467038.png",
     "Aston Villa": "https://r2.thesportsdb.com/images/media/team/badge/jykrpv1717309891.png",
     "AFC Bournemouth": "https://r2.thesportsdb.com/images/media/team/badge/y08nak1534071116.png",
-    "Bournemouth": "https://r2.thesportsdb.com/images/media/team/badge/y08nak1534071116.png",
+    "Bournemouth": "https://r2.thesportsdb.com/images/media/team/badge/y08nak1s34071116.png",
     "Brentford": "https://r2.thesportsdb.com/images/media/team/badge/grv1aw1546453779.png",
     "Brighton & Hove Albion": "https://r2.thesportsdb.com/images/media/team/badge/ywypts1448810904.png",
     "Brighton": "https://r2.thesportsdb.com/images/media/team/badge/ywypts1448810904.png",
@@ -143,6 +142,7 @@ const getLogoUrl = (apiTeamName) => {
     return teamLogos[apiTeamName] || `https://placehold.co/96x96/eee/ccc?text=${apiTeamName.substring(0,3).toUpperCase()}`;
 };
 
+
 // --- Helper Function for Scoring ---
 const calculatePoints = (prediction, actualScore) => {
     const predHome = Number(prediction.homeScore);
@@ -171,7 +171,7 @@ const runScoringProcess = async () => {
 
         if (fixturesToScore.length === 0) {
             console.log('No new fixtures to score from GW9 onwards.');
-            return { success: true, message: 'No new fixtures to score.' };
+            // We still run the recalculation to fix any past errors
         }
         
         let scoredFixturesCount = 0;
@@ -197,9 +197,8 @@ const runScoringProcess = async () => {
             }
         }
 
-        if (scoredFixturesCount === 0) {
-            console.log('No finished matches found with results on the API yet.');
-            return { success: true, message: 'No results to score yet.' };
+        if (scoredFixturesCount > 0) {
+             console.log(`Found and scored ${scoredFixturesCount} new fixtures.`);
         }
 
         console.log(`Recalculating scores for all users...`);
@@ -249,7 +248,7 @@ const runScoringProcess = async () => {
         }
 
         console.log(`Scoring complete. All user scores recalculated.`);
-        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
+        return { success: true, message: `All scores have been recalculated successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
@@ -361,13 +360,31 @@ app.post('/api/prophecies', authenticateToken, async (req, res) => {
     }
 });
 app.post('/api/predictions', authenticateToken, async (req, res) => {
-    const { predictions, jokerFixtureId } = req.body;
+    const { predictions, jokerFixtureId, submissionTime, deadline } = req.body;
     const userId = req.user.userId;
-
     try {
         const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ message: 'User not found.' });
+        if (!user) return res.status(404).json({ message: 'User not found.' });
+
+        if (submissionTime && deadline && new Date(submissionTime) > new Date(deadline)) {
+            const firstFixtureId = Object.keys(predictions)[0];
+            const fixture = await Fixture.findById(firstFixtureId);
+            if (fixture) {
+                const gameweek = fixture.gameweek;
+                if (!user.gameweekScores) user.gameweekScores = [];
+                let gwSummary = user.gameweekScores.find(gs => gs.gameweek === gameweek);
+                if (gwSummary) {
+                    await User.updateOne(
+                        { _id: userId, 'gameweekScores.gameweek': gameweek },
+                        { $set: { 'gameweekScores.$.penalty': 3 } }
+                    );
+                } else {
+                    await User.updateOne(
+                        { _id: userId },
+                        { $push: { gameweekScores: { gameweek, points: 0, penalty: 3 } } }
+                    );
+                }
+            }
         }
 
         const predictionsToUpdate = [];
@@ -378,10 +395,8 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
             const predictionData = predictions[fixtureId];
             const homeScore = predictionData.homeScore;
             const awayScore = predictionData.awayScore;
-
             const homeScoreNum = Number(homeScore);
             const awayScoreNum = Number(awayScore);
-
             const existingPrediction = user.predictions.find(p => p.fixtureId.toString() === fixtureId);
 
             if (homeScore === '' || awayScore === '' || isNaN(homeScoreNum) || isNaN(awayScoreNum)) {
@@ -392,10 +407,11 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
                 if (existingPrediction) {
                     predictionsToUpdate.push({
                         updateOne: {
-                            filter: { _id: user._id, 'predictions._id': existingPrediction._id },
+                            filter: { _id: userId, 'predictions._id': existingPrediction._id },
                             update: { $set: { 
                                 'predictions.$.homeScore': homeScoreNum, 
-                                'predictions.$.awayScore': awayScoreNum 
+                                'predictions.$.awayScore': awayScoreNum,
+                                'predictions.$.submittedAt': new Date()
                             }}
                         }
                     });
@@ -403,7 +419,8 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
                     predictionsToAdd.push({
                         fixtureId,
                         homeScore: homeScoreNum,
-                        awayScore: awayScoreNum
+                        awayScore: awayScoreNum,
+                        submittedAt: new Date()
                     });
                 }
             }
@@ -413,7 +430,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         if (predictionIdsToRemove.length > 0) {
             bulkOps.push({
                 updateOne: {
-                    filter: { _id: user._id },
+                    filter: { _id: userId },
                     update: { $pull: { predictions: { _id: { $in: predictionIdsToRemove } } } }
                 }
             });
@@ -421,7 +438,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         if (predictionsToAdd.length > 0) {
              bulkOps.push({
                 updateOne: {
-                    filter: { _id: user._id },
+                    filter: { _id: userId },
                     update: { $push: { predictions: { $each: predictionsToAdd } } }
                 }
             });
@@ -430,7 +447,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         if (jokerFixtureId !== undefined) {
              bulkOps.push({
                 updateOne: {
-                    filter: { _id: user._id },
+                    filter: { _id: userId },
                     update: { $set: { 
                         'chips.jokerFixtureId': jokerFixtureId,
                         'chips.jokerUsedInSeason': jokerFixtureId ? true : user.chips.jokerUsedInSeason
@@ -449,7 +466,7 @@ app.post('/api/predictions', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Error saving predictions.' });
     }
 });
-app.post('/api/admin/score-gameweek', authenticateToken, async (req, res) => {
+app.post('/api/admin/score-gameweek', authenticateToken, authorizeAdmin, async (req, res) => {
     const result = await runScoringProcess();
     if(result.success) res.status(200).json(result);
     else res.status(500).json(result);
@@ -465,7 +482,7 @@ app.get('/api/summary/:gameweek', authenticateToken, async (req, res) => {
         res.status(500).json({ message: 'Error fetching summary.' });
     }
 });
-app.post('/api/admin/update-score', authenticateToken, async (req, res) => {
+app.post('/api/admin/update-score', authenticateToken, authorizeAdmin, async (req, res) => {
     try {
         const { fixtureId, homeScore, awayScore } = req.body;
         if (fixtureId == null || homeScore == null || awayScore == null) {
@@ -479,7 +496,7 @@ app.post('/api/admin/update-score', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'Failed to update score.'});
     }
 });
-app.post('/api/admin/update-fixture', authenticateToken, async (req, res) => {
+app.post('/api/admin/update-fixture', authenticateToken, authorizeAdmin, async (req, res) => {
     try {
         const { fixtureId, newDate, newTime } = req.body;
         if (!fixtureId || !newDate || !newTime) {
@@ -520,6 +537,7 @@ const seedFixturesFromAPI = async () => {
             console.log(`Syncing fixtures for Gameweek ${gw}...`);
             
             const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsround.php?id=4328&r=${gw}&s=2025-2026`;
+            
             const response = await axios.get(url);
             const apiFixtures = response.data.events;
 
@@ -646,6 +664,4 @@ mongoose.connect(process.env.DATABASE_URL)
     })
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
-        console.error(error);
     });
-
