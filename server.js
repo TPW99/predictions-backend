@@ -111,7 +111,7 @@ const teamLogos = {
     "Arsenal": "https://r2.thesportsdb.com/images/media/team/badge/uyhbfe1612467038.png",
     "Aston Villa": "https://r2.thesportsdb.com/images/media/team/badge/jykrpv1717309891.png",
     "AFC Bournemouth": "https://r2.thesportsdb.com/images/media/team/badge/y08nak1534071116.png",
-    "Bournemouth": "https://r2.thesportsdb.com/images/media/team/badge/y08nak1s34071116.png",
+    "Bournemouth": "https://r2.thesportsdb.com/images/media/team/badge/y08nak1534071116.png",
     "Brentford": "https://r2.thesportsdb.com/images/media/team/badge/grv1aw1546453779.png",
     "Brighton & Hove Albion": "https://r2.thesportsdb.com/images/media/team/badge/ywypts1448810904.png",
     "Brighton": "https://r2.thesportsdb.com/images/media/team/badge/ywypts1448810904.png",
@@ -161,44 +161,47 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        // --- THIS IS THE FIX ---
-        // Only fetch scores for fixtures from Gameweek 9 onwards
+        // Temporarily fetch ALL finished fixtures to force a full recalculation
         const fixturesToScore = await Fixture.find({
             kickoffTime: { $lt: new Date() },
-            'actualScore.home': null,
-            'gameweek': { $gte: 9 } 
+            // 'actualScore.home': null  <-- TEMPORARILY REMOVED TO FORCE RECALCULATION
         });
 
         if (fixturesToScore.length === 0) {
-            console.log('No new fixtures to score from GW9 onwards.');
-            // We still run the recalculation to fix any past errors
+            console.log('No finished fixtures found to score.');
+            //return { success: true, message: 'No fixtures have been played yet.' };
         }
         
         let scoredFixturesCount = 0;
         
         for (const fixture of fixturesToScore) {
-            try {
-                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
-                const resultsResponse = await axios.get(resultsUrl);
-                const result = resultsResponse.data.events && resultsResponse.data.events[0];
+            // Only fetch if score is missing
+            if (fixture.actualScore.home === null) {
+                try {
+                    const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
+                    const resultsResponse = await axios.get(resultsUrl);
+                    const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
-                if (result && result.intHomeScore != null && result.intAwayScore != null) {
-                    await Fixture.updateOne(
-                        { _id: fixture._id },
-                        { $set: {
-                            'actualScore.home': parseInt(result.intHomeScore),
-                            'actualScore.away': parseInt(result.intAwayScore)
-                        }}
-                    );
-                    scoredFixturesCount++;
+                    if (result && result.intHomeScore != null && result.intAwayScore != null) {
+                        await Fixture.updateOne(
+                            { _id: fixture._id },
+                            { $set: {
+                                'actualScore.home': parseInt(result.intHomeScore),
+                                'actualScore.away': parseInt(result.intAwayScore)
+                            }}
+                        );
+                        scoredFixturesCount++;
+                    }
+                } catch (e) {
+                    console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
                 }
-            } catch (e) {
-                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
 
         if (scoredFixturesCount > 0) {
-             console.log(`Found and scored ${scoredFixturesCount} new fixtures.`);
+            console.log(`Found and scored ${scoredFixturesCount} new fixtures.`);
+        } else {
+            console.log('No new fixtures to score. Forcing full recalculation...');
         }
 
         console.log(`Recalculating scores for all users...`);
@@ -213,10 +216,7 @@ const runScoringProcess = async () => {
             const pointsByGameweek = new Map();
             for (const prediction of user.predictions) {
                 const fixture = prediction.fixtureId;
-                
-                // --- THIS IS THE FIX ---
-                // Only calculate points for fixtures from Gameweek 9 onwards
-                if (fixture && fixture.actualScore && fixture.actualScore.home !== null && fixture.gameweek >= 9) {
+                if (fixture && fixture.actualScore && fixture.actualScore.home !== null) {
                     let points = calculatePoints(prediction, fixture.actualScore);
                     if (fixture.isDerby) points *= 2;
                     if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
@@ -227,7 +227,6 @@ const runScoringProcess = async () => {
                 }
             }
 
-            // This loop now only updates scores for GW9 and onwards, respecting manual scores for GW1-8
             for (const [gameweek, points] of pointsByGameweek.entries()) {
                 const summary = gameweekScoresMap.get(gameweek) || { gameweek, points: 0, penalty: 0 };
                 summary.points = points;
@@ -235,8 +234,7 @@ const runScoringProcess = async () => {
             }
             
             const newGameweekScores = Array.from(gameweekScoresMap.values());
-            // This now correctly sums your manual scores (GW1-8) and the new scores (GW9+)
-            const newTotalScore = newGameweekScores.reduce((acc, curr) => acc + curr.points - curr.penalty, 0); 
+            const newTotalScore = newGameweekScores.reduce((acc, curr) => acc + curr.points - curr.penalty, 0);
             
             await User.updateOne(
                 { _id: user._id },
@@ -664,4 +662,6 @@ mongoose.connect(process.env.DATABASE_URL)
     })
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
+        console.error(error);
     });
+
