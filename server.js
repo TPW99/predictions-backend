@@ -161,48 +161,45 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        // --- THIS IS THE FIX (TEMPORARY) ---
-        // We are temporarily fetching ALL finished fixtures to force a full recalculation
+        // --- THIS IS THE FIX ---
+        // Only fetch scores for fixtures from Gameweek 9 onwards
         const fixturesToScore = await Fixture.find({
             kickoffTime: { $lt: new Date() },
-            // 'actualScore.home': null  <-- TEMPORARILY REMOVED
+            'actualScore.home': null,
+            'gameweek': { $gte: 9 } 
         });
 
         if (fixturesToScore.length === 0) {
-            console.log('No finished fixtures found to score.');
-            return { success: true, message: 'No fixtures have been played yet.' };
+            console.log('No new fixtures to score from GW9 onwards.');
+            return { success: true, message: 'No new fixtures to score.' };
         }
         
         let scoredFixturesCount = 0;
         
         for (const fixture of fixturesToScore) {
-            // Only fetch if score is missing
-            if (fixture.actualScore.home === null) {
-                try {
-                    const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
-                    const resultsResponse = await axios.get(resultsUrl);
-                    const result = resultsResponse.data.events && resultsResponse.data.events[0];
+            try {
+                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
+                const resultsResponse = await axios.get(resultsUrl);
+                const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
-                    if (result && result.intHomeScore != null && result.intAwayScore != null) {
-                        await Fixture.updateOne(
-                            { _id: fixture._id },
-                            { $set: {
-                                'actualScore.home': parseInt(result.intHomeScore),
-                                'actualScore.away': parseInt(result.intAwayScore)
-                            }}
-                        );
-                        scoredFixturesCount++;
-                    }
-                } catch (e) {
-                    console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
+                if (result && result.intHomeScore != null && result.intAwayScore != null) {
+                    await Fixture.updateOne(
+                        { _id: fixture._id },
+                        { $set: {
+                            'actualScore.home': parseInt(result.intHomeScore),
+                            'actualScore.away': parseInt(result.intAwayScore)
+                        }}
+                    );
+                    scoredFixturesCount++;
                 }
+            } catch (e) {
+                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
 
-        if (scoredFixturesCount > 0) {
-            console.log(`Found and scored ${scoredFixturesCount} new fixtures.`);
-        } else {
-            console.log('No new fixtures to score. Forcing full recalculation...');
+        if (scoredFixturesCount === 0) {
+            console.log('No finished matches found with results on the API yet.');
+            return { success: true, message: 'No results to score yet.' };
         }
 
         console.log(`Recalculating scores for all users...`);
@@ -217,7 +214,10 @@ const runScoringProcess = async () => {
             const pointsByGameweek = new Map();
             for (const prediction of user.predictions) {
                 const fixture = prediction.fixtureId;
-                if (fixture && fixture.actualScore && fixture.actualScore.home !== null) {
+                
+                // --- THIS IS THE FIX ---
+                // Only calculate points for fixtures from Gameweek 9 onwards
+                if (fixture && fixture.actualScore && fixture.actualScore.home !== null && fixture.gameweek >= 9) {
                     let points = calculatePoints(prediction, fixture.actualScore);
                     if (fixture.isDerby) points *= 2;
                     if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
@@ -228,6 +228,7 @@ const runScoringProcess = async () => {
                 }
             }
 
+            // This loop now only updates scores for GW9 and onwards, respecting manual scores for GW1-8
             for (const [gameweek, points] of pointsByGameweek.entries()) {
                 const summary = gameweekScoresMap.get(gameweek) || { gameweek, points: 0, penalty: 0 };
                 summary.points = points;
@@ -235,7 +236,8 @@ const runScoringProcess = async () => {
             }
             
             const newGameweekScores = Array.from(gameweekScoresMap.values());
-            const newTotalScore = newGameweekScores.reduce((acc, curr) => acc + curr.points - curr.penalty, 0);
+            // This now correctly sums your manual scores (GW1-8) and the new scores (GW9+)
+            const newTotalScore = newGameweekScores.reduce((acc, curr) => acc + curr.points - curr.penalty, 0); 
             
             await User.updateOne(
                 { _id: user._id },
@@ -247,7 +249,7 @@ const runScoringProcess = async () => {
         }
 
         console.log(`Scoring complete. All user scores recalculated.`);
-        return { success: true, message: `All scores have been recalculated successfully.` };
+        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
@@ -664,4 +666,3 @@ mongoose.connect(process.env.DATABASE_URL)
     .catch((error) => {
         console.error('Error connecting to MongoDB Atlas:', error);
     });
-
