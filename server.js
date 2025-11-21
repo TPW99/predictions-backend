@@ -161,16 +161,15 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        // --- THIS IS THE FIX ---
-        // Only fetch scores for fixtures from Gameweek 9 onwards
+        // --- FIX: Start checking from Gameweek 12 onwards ---
         const fixturesToScore = await Fixture.find({
             kickoffTime: { $lt: new Date() },
             'actualScore.home': null,
-            'gameweek': { $gte: 9 } 
+            'gameweek': { $gte: 12 } 
         });
 
         if (fixturesToScore.length === 0) {
-            console.log('No new fixtures to score from GW9 onwards.');
+            console.log('No new fixtures to score from GW12 onwards.');
             return { success: true, message: 'No new fixtures to score.' };
         }
         
@@ -215,9 +214,8 @@ const runScoringProcess = async () => {
             for (const prediction of user.predictions) {
                 const fixture = prediction.fixtureId;
                 
-                // --- THIS IS THE FIX ---
-                // Only calculate points for fixtures from Gameweek 9 onwards
-                if (fixture && fixture.actualScore && fixture.actualScore.home !== null && fixture.gameweek >= 9) {
+                // --- FIX: Only calculate points for fixtures from Gameweek 12 onwards ---
+                if (fixture && fixture.actualScore && fixture.actualScore.home !== null && fixture.gameweek >= 12) {
                     let points = calculatePoints(prediction, fixture.actualScore);
                     if (fixture.isDerby) points *= 2;
                     if (user.chips.jokerFixtureId && user.chips.jokerFixtureId.equals(fixture._id)) points *= 2;
@@ -228,7 +226,7 @@ const runScoringProcess = async () => {
                 }
             }
 
-            // This loop now only updates scores for GW9 and onwards, respecting manual scores for GW1-8
+            // Update gameweekScores with new points for GW12+ (keeping old manual ones)
             for (const [gameweek, points] of pointsByGameweek.entries()) {
                 const summary = gameweekScoresMap.get(gameweek) || { gameweek, points: 0, penalty: 0 };
                 summary.points = points;
@@ -236,9 +234,10 @@ const runScoringProcess = async () => {
             }
             
             const newGameweekScores = Array.from(gameweekScoresMap.values());
-            // This now correctly sums your manual scores (GW1-8) and the new scores (GW9+)
+            // Sum up ALL gameweek scores (Manual GW1-11 + Calculated GW12+)
             const newTotalScore = newGameweekScores.reduce((acc, curr) => acc + curr.points - curr.penalty, 0); 
             
+            // Use updateOne to bypass validation
             await User.updateOne(
                 { _id: user._id },
                 { $set: { 
