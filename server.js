@@ -161,14 +161,12 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        // Only fetch scores for fixtures from Gameweek 12 onwards
+        // --- FIX: Start checking from Gameweek 12 onwards ---
         const fixturesToScore = await Fixture.find({
             kickoffTime: { $lt: new Date() },
             'actualScore.home': null,
             'gameweek': { $gte: 12 } 
         });
-
-        let scoredFixturesCount = 0;
 
         if (fixturesToScore.length === 0) {
             console.log('No new fixtures to score from GW12 onwards. Proceeding to recalculate totals...');
@@ -195,6 +193,8 @@ const runScoringProcess = async () => {
                 }
             }
         }
+        
+        let scoredFixturesCount = fixturesToScore.length; // Just for logging
 
         if (scoredFixturesCount > 0) {
              console.log(`Found and scored ${scoredFixturesCount} new fixtures.`);
@@ -214,6 +214,7 @@ const runScoringProcess = async () => {
                 const fixture = prediction.fixtureId;
                 
                 // --- FIX: Only calculate points for fixtures from Gameweek 12 onwards ---
+                // This ensures we DO NOT touch scores from GW 1-11
                 if (fixture && fixture.actualScore && fixture.actualScore.home !== null && fixture.gameweek >= 12) {
                     let points = calculatePoints(prediction, fixture.actualScore);
                     if (fixture.isDerby) points *= 2;
@@ -247,7 +248,7 @@ const runScoringProcess = async () => {
         }
 
         console.log(`Scoring complete. All user scores recalculated.`);
-        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully. Leaderboard updated.` };
+        return { success: true, message: `Leaderboard recalculated successfully.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
