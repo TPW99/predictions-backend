@@ -161,44 +161,43 @@ const runScoringProcess = async () => {
         const apiKey = process.env.THESPORTSDB_API_KEY;
         if (!apiKey) return { success: false, message: 'API key not found.' };
 
-        // --- FIX: Start checking from Gameweek 12 onwards ---
+        // Only fetch scores for fixtures from Gameweek 12 onwards
         const fixturesToScore = await Fixture.find({
             kickoffTime: { $lt: new Date() },
             'actualScore.home': null,
             'gameweek': { $gte: 12 } 
         });
 
-        if (fixturesToScore.length === 0) {
-            console.log('No new fixtures to score from GW12 onwards.');
-            return { success: true, message: 'No new fixtures to score.' };
-        }
-        
         let scoredFixturesCount = 0;
-        
-        for (const fixture of fixturesToScore) {
-            try {
-                const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
-                const resultsResponse = await axios.get(resultsUrl);
-                const result = resultsResponse.data.events && resultsResponse.data.events[0];
 
-                if (result && result.intHomeScore != null && result.intAwayScore != null) {
-                    await Fixture.updateOne(
-                        { _id: fixture._id },
-                        { $set: {
-                            'actualScore.home': parseInt(result.intHomeScore),
-                            'actualScore.away': parseInt(result.intAwayScore)
-                        }}
-                    );
-                    scoredFixturesCount++;
+        if (fixturesToScore.length === 0) {
+            console.log('No new fixtures to score from GW12 onwards. Proceeding to recalculate totals...');
+            // We removed the 'return' here so it continues to recalculate the leaderboard
+        } else {
+            for (const fixture of fixturesToScore) {
+                try {
+                    const resultsUrl = `https://www.thesportsdb.com/api/v1/json/${apiKey}/lookupevent.php?id=${fixture.theSportsDbId}`;
+                    const resultsResponse = await axios.get(resultsUrl);
+                    const result = resultsResponse.data.events && resultsResponse.data.events[0];
+
+                    if (result && result.intHomeScore != null && result.intAwayScore != null) {
+                        await Fixture.updateOne(
+                            { _id: fixture._id },
+                            { $set: {
+                                'actualScore.home': parseInt(result.intHomeScore),
+                                'actualScore.away': parseInt(result.intAwayScore)
+                            }}
+                        );
+                        scoredFixturesCount++;
+                    }
+                } catch (e) {
+                    console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
                 }
-            } catch (e) {
-                console.error(`Could not fetch result for fixture ${fixture.theSportsDbId}:`, e.message);
             }
         }
 
-        if (scoredFixturesCount === 0) {
-            console.log('No finished matches found with results on the API yet.');
-            return { success: true, message: 'No results to score yet.' };
+        if (scoredFixturesCount > 0) {
+             console.log(`Found and scored ${scoredFixturesCount} new fixtures.`);
         }
 
         console.log(`Recalculating scores for all users...`);
@@ -248,7 +247,7 @@ const runScoringProcess = async () => {
         }
 
         console.log(`Scoring complete. All user scores recalculated.`);
-        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully.` };
+        return { success: true, message: `${scoredFixturesCount} fixtures scored successfully. Leaderboard updated.` };
 
     } catch (error) {
         console.error('Error during scoring process:', error);
